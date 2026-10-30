@@ -185,3 +185,68 @@ A1, A2 and A3 run concurrently. B1 and B2 run concurrently after wave A is commi
 
 Commits on `simplify`, in order: the spec; A1; A2 (with the `requests_of` follow-up in `cmd_regrade`); A3; B1 and
 B2 together; the Outcome. The merge into `main` is the user's call.
+
+## Outcome (2026-10-30)
+
+**Behavior: unchanged, verified.** Against a baseline of the unchanged code (V1–V5 on `main`, results kept in
+`/tmp/hev-baseline`):
+
+| | Result |
+|---|---|
+| V1 unit tests | 16 ok (one new test, `test_harness_env_is_the_allowlist`); run 5× |
+| V2 end-to-end | 5 ok, 60 s |
+| V3 check-task | 13/13 ok |
+| V4 doctor | 8/8 routes of all 5 harnesses pass |
+| V5 scripted replay | 104/104 pass, 289 s |
+| V6 trial-by-trial comparison with the baseline | 104 trials in common, 0 differences in status, score, note, route, translation, served and requested models, patch lines, escaped processes, exit code; the trial dir names are identical, so `run_key` is unchanged |
+| Fresh-eyes review (Opus, high; the diff and the invariants, not the authors' notes) | no behavior change found in trial running, grading, isolation, `run_key`, `classify`, `result.json`, the CLI or config validation; it listed the intended `hev task` error-path reorderings below and two CLAUDE.md wordings, fixed in 407b0b8 |
+
+Known behavior differences, all in `hev task` error paths and all intended: a name collision is now reported before
+any GitHub call or clone (`from-pr`) and before the three questions (`new`); the collision message is the same for
+the three commands (`already exists (pick another name)`); `Gateway.missing_keys` and `gateway.HOOKS_DIR`, unused
+outside `start`, no longer exist.
+
+**A pre-existing flake, diagnosed.** `tests.test_units.Grading.test_fixture_fails_solution_passes` fails about once
+in 10 to 25 runs on `main` as well as on `simplify`. Reproduced in isolation: `solution_patch` returns an empty
+patch. `shutil.copytree` lays `solution/` over the fresh repo with `copy2`, which preserves the source file's old
+mtime; the overwritten file keeps its size and inode, and when its ctime lands in the same coarse clock tick as the
+index written by `materialize`, git's stat cache sees no change and `git add -A` adds nothing. In a scripted run the
+same empty patch would fail that task for every harness. Not caused by this branch; the one-line fix (copy with
+`copy_function=shutil.copy`, so the mtime is new) is a behavior change and is proposed separately.
+
+**Lines.**
+
+| File | Before | After | Budget |
+|---|---:|---:|---:|
+| `evals/cli.py` | 371 | 355 | 305 |
+| `evals/trial.py` | 296 | 299 | 275 |
+| `evals/author.py` | 255 | 256 | 235 |
+| `evals/config.py` | 210 | 208 | 195 |
+| `evals/gateway.py` | 149 | 144 | 140 |
+| `gateway_hooks.py`, `report.py`, `graders/review.py`, `hev` | 441 | 441 | 441 |
+| **Python total** | **1,722** | **1,703** | **≤ 1,591** |
+| `README.md` | 121 | 46 | 45 |
+| `TASKS.md` | 106 | 72 | 70 |
+| `CLAUDE.md` | 70 | 55 | 55 |
+| **Docs total** | **297** | **173** | **≤ 180** |
+
+The docs budget was met: 42% fewer lines, nothing relocated to a new file. The Python budget was not: three agents
+working independently each reported that the spec's moves save far less than estimated, because the files were
+already dense and the parts that must stay (the kill sequence, the env allowlist, the result dict, argparse, the
+validation rules) are most of each file. Splitting `run_trial` and `cmd_run` costs signatures, docstrings and call
+sites; it buys clarity, not lines. Getting to 1,591 would have meant packing statements, which the spec forbids.
+
+What changed in shape:
+- `run_trial` (107 lines) is now `harness_env` (36: files, env, argv; the `hev exec` seam), `launch` (30: process,
+  timeout, kill sequence, sweep) and `run_trial` (46: materialize, register, diff, grade, result).
+- `cmd_run` (96) is `plan_run` (22), `estimate` (8) and `cmd_run` (52). `doctor` builds its smoke run through
+  `parser(root)`, so a new `run` flag is declared once. The hidden flags are one loop.
+- `cmd_doctor` 54 → 45 with one `check` closure. `from_pr` 45 → 25 with `_review_findings`. `fresh()` owns the
+  collision check. Each model and task TOML key is named once, in its dataclass.
+- README: pitch, five quickstart lines, an example report (rendered by `report.render` on invented rows, labelled
+  as an example), three guarantees, statuses, how to add things, links. TASKS.md: the same six examples, less prose.
+  CLAUDE.md: synced to the new function names.
+
+Commits on `simplify`: d65b4e9 spec, 43ee2e0 spec adjustments, bc4e84a config/gateway/author, 44a408f cli, c1e52e2
+trial, 752233f regrade helper, 2cfad93 docs, 407b0b8 CLAUDE.md wordings, and this section. Not pushed. Merging into
+`main` is the user's call.
