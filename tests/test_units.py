@@ -8,7 +8,8 @@ sys.path.insert(0, str(ROOT))
 from evals import author, report
 from evals.cli import check_task
 from evals.config import ConfigError, Model, fill, load_harness, load_task
-from evals.trial import INSTRUCTION_FILES, classify, diff_against, materialize, grade, plant_decoys, solution_patch
+from evals.trial import (INSTRUCTION_FILES, classify, diff_against, materialize, grade, harness_env, plant_decoys,
+                         solution_patch)
 from graders.review import parse, score_review
 
 
@@ -63,6 +64,23 @@ class Config(unittest.TestCase):
         h, gem, claude = load_harness(p), Model("g", "gemini", "g"), Model("c", "anthropic", "c")
         self.assertEqual((h.route_for(gem), h.route_for(claude)), ("openai", "anthropic"))
         self.assertEqual((h.route_for(gem, "anthropic"), h.route_for(gem, "gemini")), ("anthropic", None))
+
+    @mock.patch.dict("os.environ", {"HEV_RUNNER_SECRET": "x"})
+    def test_harness_env_is_the_allowlist(self):
+        p = write(self.d / "fake.toml", f'name="f"\nversion="1"\ninstall="true"\nbin="{self.d}/bin/agent"\n'
+                                        'cmd=["{bin}", "{model}", "{prompt}"]\n'
+                                        '[route.openai]\nenv={ FAKE_URL = "{base_url}", FAKE_KEY = "{key}" }\n')
+        home, tmp = self.d / "w" / "home", self.d / "w" / "tmp"
+        for d in (home, tmp):
+            d.mkdir(parents=True)
+        argv, env, _ = harness_env(load_harness(p), Model("scripted", "scripted", ""), "openai",
+                                   base_url="http://127.0.0.1:9", key="sk-t", prompt="Fix it.", workdir=self.d / "w",
+                                   home=home, tmp=tmp, trial_id="t1", max_requests=5)
+        self.assertEqual(argv, [f"{self.d}/bin/agent", "scripted", "Fix it."])
+        self.assertEqual((env["FAKE_URL"], env["FAKE_KEY"]), ("http://127.0.0.1:9/v1", "sk-t"))
+        self.assertEqual((env["HOME"], env["TMPDIR"]), (str(home), str(tmp)))
+        self.assertNotIn("HEV_RUNNER_SECRET", env)
+        self.assertTrue(env["PATH"].startswith(f"{self.d}/bin:"))
 
 
 class Grading(unittest.TestCase):
