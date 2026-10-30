@@ -1,0 +1,10 @@
+prompt = """
+The function `slugify` in `textutil.py` is buggy: it should lowercase, replace runs of non-alphanumeric characters
+with a single hyphen, strip leading/trailing hyphens, and transliterate accented Latin letters to ASCII (é -> e).
+Fix it. Do not change its signature. Run any tests you write yourself, then stop.
+"""
+tags = ["python", "bugfix"]
+
+[verify]
+cmd = "python3 -m unittest test_slugify"
+hidden = "hidden"

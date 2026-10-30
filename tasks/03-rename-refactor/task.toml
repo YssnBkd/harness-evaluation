@@ -1,0 +1,15 @@
+prompt = """
+Rename the function `calc_total` to `compute_order_total` everywhere in this project (definition, all call sites,
+docs, and existing tests), and make it also accept an optional keyword `tax_rate` (default 0.0) that multiplies the
+subtotal by (1 + tax_rate). Keep existing tests passing, add one test for tax_rate, then stop.
+"""
+tags = ["python", "refactor"]
+
+[verify]
+# Only the project's own code and docs are checked for the old name, so a harness's notes can't fail the task.
+cmd = """
+! grep -rq calc_total --include='*.py' . || { echo 'calc_total still in code'; exit 1; }
+! grep -q calc_total README.md || { echo 'calc_total still in README'; exit 1; }
+python3 -m unittest discover -p 'test*.py'
+"""
+hidden = "hidden"

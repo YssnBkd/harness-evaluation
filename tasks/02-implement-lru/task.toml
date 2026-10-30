@@ -1,0 +1,9 @@
+prompt = """
+Implement the class `LRUCache` in `lru.py` (stub provided) following the docstring. Capacity-bound, O(1) get/put,
+standard library only. Write your own tests and run them, then stop.
+"""
+tags = ["python", "implement"]
+
+[verify]
+cmd = "python3 -m unittest test_lru"
+hidden = "hidden"

@@ -2,10 +2,11 @@
 
 The runner registers each trial by writing $HEV_RUN_DIR/keys/<api key>.json before launching the harness:
   {"trial": id, "dir": trial dir, "model": proxy model name, "provider": ..., "max_requests": n, "max_cost": usd,
-   "script": shell command for the scripted model}
+   "script": shell command for the scripted model, "fault": scripted fault mode}
 and deletes it when the trial ends, so leftover processes can't spend or pollute results.
+Every request is logged to <trial dir>/requests.jsonl; caps, quota and canary events are logged there too.
 """
-import json, os, re, threading, time, uuid
+import json, os, re, shutil, threading, time, uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -13,8 +14,11 @@ from fastapi import HTTPException
 from litellm.integrations.custom_logger import CustomLogger
 from litellm.proxy._types import UserAPIKeyAuth
 
-KEYS = Path(os.environ.get("HEV_RUN_DIR", ".")) / "keys"
-spent = {}      # trial -> {"requests": n, "cost": usd}
+RUN = Path(os.environ.get("HEV_RUN_DIR", "."))
+KEYS, DEAD = RUN / "keys", RUN / "dead"
+BUDGET = float(os.environ.get("HEV_BUDGET") or "inf")
+CANARY = os.environ.get("HEV_CANARY") or None
+spent = {}      # trial -> {"requests": n, "cost": usd}; one worker process, so this is the whole run
 
 
 def trial_of(api_key):
@@ -45,7 +49,7 @@ def _strip(o, key):
 
 def _log(t, row):
     with open(Path(t["dir"]) / "requests.jsonl", "a") as f:
-        f.write(json.dumps(row) + "\n")
+        f.write(json.dumps({"t": time.time(), **row}) + "\n")
 
 
 def _hev(kwargs):
@@ -53,15 +57,32 @@ def _hev(kwargs):
     return (md.get("user_api_key_metadata") or {}).get("hev") or (md.get("user_api_key_auth_metadata") or {}).get("hev")
 
 
+def _is_quota(msg):
+    """Errors that retrying won't fix: a zero quota or a retry delay longer than a minute."""
+    delay = re.search(r'retry(?:Delay|_delay)?\W+(\d+)(?:\.\d+)?s', msg)
+    return bool(re.search(r"limit: 0\b", msg) or (delay and int(delay.group(1)) > 60))
+
+
+def _reject(t, status, code, msg):
+    _log(t, {"status": status, "error": {"code": code, "msg": msg}})
+    raise HTTPException(code, msg)
+
+
 class Hooks(CustomLogger):
     async def async_pre_call_hook(self, user_api_key_dict, cache, data, call_type):
         t = (user_api_key_dict.metadata or {}).get("hev")
         if t is None:
             raise HTTPException(401, "hev: no trial")
+        if (DEAD / t["model"]).exists():
+            _reject(t, "quota", 429, f"hev-quota: {t['model']} is out of quota for this run")
         s = spent.setdefault(t["trial"], {"requests": 0, "cost": 0.0})
         if s["requests"] >= t.get("max_requests", 10**9) or s["cost"] >= t.get("max_cost", 1e9):
-            raise HTTPException(429, "hev-capped: trial request/cost cap reached")
+            _reject(t, "capped", 429, "hev-capped: trial request/cost cap reached")
+        if sum(x["cost"] for x in spent.values()) >= BUDGET:
+            _reject(t, "capped", 429, "hev-capped: run budget reached")
         s["requests"] += 1
+        if CANARY and CANARY in json.dumps(data, default=str):
+            _log(t, {"status": "leak"})               # something outside the trial reached the model
         # /v1/messages keeps litellm's metadata in "litellm_metadata"; "metadata" there belongs to Anthropic's API
         mkey = "litellm_metadata" if "litellm_metadata" in data else "metadata"
         data.setdefault(mkey, {})["hev_requested_model"] = data.get("model")
@@ -89,18 +110,49 @@ class Hooks(CustomLogger):
         lp = kwargs.get("litellm_params") or {}
         requested = ((lp.get("metadata") or {}).get("hev_requested_model")
                      or (lp.get("litellm_metadata") or {}).get("hev_requested_model"))
+        msg = str(exc)[:2000] if exc else ""
+        if exc and _is_quota(msg):                     # circuit breaker: stop spending on this model for the run
+            DEAD.mkdir(exist_ok=True)
+            (DEAD / t["model"]).write_text(msg[:500])
+        usage = (md.get("usage_object") or {})
         _log(t, {
-            "t": time.time(), "status": "error" if exc else "ok", "requested": requested,
+            "status": "error" if exc else "ok", "requested": requested,
             "served": (slo.get("model_group") or slo.get("model") or "").replace(f"/{t['key']}", "").replace(t["key"], t["model"]),
             "call": slo.get("call_type"),
-            "in": slo.get("prompt_tokens"), "out": slo.get("completion_tokens"), "cost": cost,
+            "in": slo.get("prompt_tokens"), "out": slo.get("completion_tokens"),
+            "cached": (usage.get("prompt_tokens_details") or {}).get("cached_tokens") or usage.get("cache_read_input_tokens"),
+            "cost": cost,
             "secs": round((end_time - start_time).total_seconds(), 3) if exc is None else None,
-            "error": None if exc is None else {"type": type(exc).__name__,
-                                               "code": getattr(exc, "status_code", None), "msg": str(exc)[:500]},
+            "error": None if exc is None else {"type": type(exc).__name__, "code": getattr(exc, "status_code", None),
+                                               "quota": _is_quota(msg), "msg": msg[:500]},
         })
 
 
 hooks = Hooks()
+
+
+def _watchdog(parent, run):
+    """When the runner is gone (even kill -9): kill this run's harness processes, then exit. Nothing is left behind."""
+    marker = f"HEV_RUN={run}".encode() + b"\0"
+    while True:
+        time.sleep(2)
+        try:
+            os.kill(parent, 0)
+        except ProcessLookupError:
+            for p in Path("/proc").iterdir():
+                try:
+                    if p.name.isdigit() and int(p.name) != os.getpid() and marker in (p / "environ").read_bytes():
+                        os.kill(int(p.name), 9)
+                except OSError:
+                    pass
+            if os.environ.get("HEV_WORK_DIR"):
+                shutil.rmtree(os.environ["HEV_WORK_DIR"], ignore_errors=True)
+            os._exit(0)
+
+
+if os.environ.get("HEV_PARENT_PID"):
+    threading.Thread(target=_watchdog, args=(int(os.environ["HEV_PARENT_PID"]), os.environ.get("HEV_RUN_NONCE", "-")),
+                     daemon=True).start()
 
 
 # ---- scripted model: $0 stand-in that drives the harness's own shell tool ----

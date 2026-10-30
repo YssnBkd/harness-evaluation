@@ -1,0 +1,18 @@
+# Models a run can use: `./hev run -m opus,argon ...`
+# price: USD per token (in, out, cache_read, cache_write). Set it for models LiteLLM's built-in price list lacks,
+# otherwise costs show as $0. Check the provider's pricing page; prices change.
+
+[scripted]                 # $0 stand-in that replays each task's reference solution through the harness's tools
+provider = "scripted"
+
+[opus]
+provider = "anthropic"
+id = "claude-opus-5-5"
+
+[haiku]                    # cheap model for smoke tests
+provider = "anthropic"
+id = "claude-haiku-5-5"
+
+[argon]
+provider = "gemini"
+id = "gemini-4-argon"

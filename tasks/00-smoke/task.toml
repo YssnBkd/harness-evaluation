@@ -1,0 +1,8 @@
+# The smallest possible task: proves a harness can be driven end to end (used by `hev doctor`).
+prompt = "Create a file named hello.txt containing exactly the word hello."
+timeout = 300
+max_requests = 30
+max_cost = 0.5
+
+[verify]
+cmd = 'test "$(cat hello.txt)" = hello'

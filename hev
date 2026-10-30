@@ -1,0 +1,11 @@
+#!/usr/bin/env python3
+"""harness-evals CLI. Stdlib only; run ./hev --help."""
+import sys
+from pathlib import Path
+
+if sys.version_info < (3, 11):
+    sys.exit("hev needs Python 3.11+ (for tomllib)")
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from evals.cli import main
+
+sys.exit(main())
