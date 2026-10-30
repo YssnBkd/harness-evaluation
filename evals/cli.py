@@ -5,7 +5,7 @@ from pathlib import Path
 from . import author, report
 from .config import PROVIDERS, ConfigError, fill, load_harnesses, load_models, load_task, load_tasks
 from .gateway import LITELLM_VERSION, Gateway, litellm_bin, load_dotenv
-from .trial import INSTRUCTION_FILES, grade, offline_prefix, run_trial, solution_patch, classify
+from .trial import INSTRUCTION_FILES, classify, grade, offline_prefix, requests_of, run_trial, solution_patch
 
 HOOKS = Path(__file__).with_name("gateway_hooks.py")
 GREEN, RED, YELLOW, DIM, END = ("\033[32m", "\033[31m", "\033[33m", "\033[2m", "\033[0m") if sys.stdout.isatty() \
@@ -230,9 +230,7 @@ def cmd_regrade(a, root):
         if r["task"] not in tasks or tasks[r["task"]].hash != r["task_hash"]:
             continue
         passed, score, note = grade(tasks[r["task"]], (p.parent / "diff.patch").read_text(), p.parent / "verify.log")
-        rows = [json.loads(l) for l in (p.parent / "requests.jsonl").read_text().splitlines()] \
-            if (p.parent / "requests.jsonl").exists() else []
-        status = classify(rows, r["timed_out"], r["status"] == "error:suspend", passed)
+        status = classify(requests_of(p.parent), r["timed_out"], r["status"] == "error:suspend", passed)
         if (status, score) != (r["status"], r["score"]):
             print(f"{p.parent.name}: {r['status']} → {status}")
             r.update(status=status, score=score, note=note)
