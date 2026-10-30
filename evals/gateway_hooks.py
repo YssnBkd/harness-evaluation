@@ -113,7 +113,7 @@ def _pick_shell(tools):
         fn = tool.get("function", tool)
         name = fn.get("name", "")
         props = (fn.get("parameters") or {}).get("properties") or {}
-        arg = next((a for a in ("command", "cmd", "script") if a in props), None)
+        arg = next((a for a in props if a.lower() in ("command", "cmd", "script", "commandline", "command_line")), None)
         if arg and any(s in name.lower() for s in SHELL_NAMES):
             return name, arg, fn.get("parameters") or {}
     return None
@@ -122,15 +122,24 @@ def _pick_shell(tools):
 def _plan(body):
     """First turn: one shell tool call running the trial's script. After a tool result: a final answer."""
     t = trial_of(body.get("model", "").rpartition("/")[2]) or {}
-    called = any(m.get("role") == "tool" for m in body.get("messages", []))
+    msgs = body.get("messages", [])                   # adapters differ in how tool results come back,
+    called = any(m.get("role") in ("tool", "function") or m.get("tool_calls") for m in msgs)  # so check both
     shell = _pick_shell(body.get("tools"))
+    if t.get("dir"):                                  # what the harness offered: makes adapter issues obvious
+        with open(Path(t["dir"]) / "scripted.jsonl", "a") as f:
+            f.write(json.dumps({"called": called, "picked": shell and shell[:2], "tools": [
+                {"name": (x.get("function") or x).get("name"),
+                 "args": list(((x.get("function") or x).get("parameters") or {}).get("properties", {}))}
+                for x in body.get("tools") or []]}) + "\n")
     if called or shell is None:
         return t, "Done.", None
     name, arg, schema = shell
     args = {arg: t.get("script", "echo scripted > SCRIPTED_OK")}
-    for req in schema.get("required", []):            # fill other required string args (e.g. description)
-        if req not in args and (schema.get("properties", {}).get(req) or {}).get("type") == "string":
-            args[req] = "hev scripted step"
+    filler = {"string": "hev scripted step", "boolean": False, "integer": 0, "number": 0}
+    for req in schema.get("required", []):            # fill other required args (description, IsDaemon, ...)
+        typ = (schema.get("properties", {}).get(req) or {}).get("type")
+        if req not in args and typ in filler:
+            args[req] = filler[typ]
     return t, "", {"id": f"call_{uuid.uuid4().hex[:12]}", "type": "function",
                    "function": {"name": name, "arguments": json.dumps(args)}}
 

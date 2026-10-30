@@ -2,3 +2,4 @@ results/
 .env
 __pycache__/
 *.pyc
+.claude/settings.local.json
