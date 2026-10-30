@@ -3,7 +3,7 @@ import argparse, fnmatch, hashlib, json, os, random, secrets, shutil, signal, su
 from pathlib import Path
 
 from . import author, report
-from .config import ConfigError, fill, load_harnesses, load_models, load_task, load_tasks
+from .config import PROVIDERS, ConfigError, fill, load_harnesses, load_models, load_task, load_tasks
 from .gateway import LITELLM_VERSION, Gateway, litellm_bin, load_dotenv
 from .trial import INSTRUCTION_FILES, grade, offline_prefix, run_trial, solution_patch, classify
 
@@ -53,24 +53,16 @@ def check_ancestors(path):
                           f"{', '.join(map(str, bad))} — remove them or set HEV_WORK to another folder")
 
 
-def cmd_run(a, root):
+def plan_run(a, root):
+    """The trials still to run (finished ones are resumed), what was skipped and why, and the installed harnesses."""
     models, harnesses, tasks = load_models(root / "models.toml"), load_harnesses(root), load_tasks(root)
-    ms = pick(models, a.models, "model")
-    hs = pick(harnesses, a.harnesses, "harness")
-    ts = pick(tasks, a.tasks, "task")
-    results = Path(a.results)
-    versions, skipped = {}, []
-    for h in hs:
-        v = installed_version(harnesses[h])
-        if v is None:
-            skipped.append(f"{h}: not installed — run ./hev install {h}")
-        else:
-            versions[h] = v
-            if harnesses[h].version not in v:
-                print(f"{YELLOW}warning{END}: {h} reports {v!r}, pinned {harnesses[h].version}")
-    hs = [h for h in hs if h in versions]
-    rng = random.Random(a.seed)
-    plan = []
+    ms, hs, ts = pick(models, a.models, "model"), pick(harnesses, a.harnesses, "harness"), pick(tasks, a.tasks, "task")
+    versions = {h: installed_version(harnesses[h]) for h in hs}
+    for h, v in versions.items():
+        if v and harnesses[h].version not in v:
+            print(f"{YELLOW}warning{END}: {h} reports {v!r}, pinned {harnesses[h].version}")
+    skipped = [f"{h}: not installed — run ./hev install {h}" for h in hs if versions[h] is None]
+    hs, rng, plan = [h for h in hs if versions[h] is not None], random.Random(a.seed), []
     for idx in range(1, a.trials + 1):
         for t in rng.sample(ts, len(ts)):
             for m in ms:
@@ -79,11 +71,24 @@ def cmd_run(a, root):
                         else [harnesses[h].route_for(models[m], a.route)]
                     for route in filter(None, routes):
                         key = run_key(tasks[t], models[m], harnesses[h], versions[h], idx, route)
-                        out = results / "trials" / f"{t}__{h}__{m}__{idx}__{key[:8]}"
+                        out = Path(a.results) / "trials" / f"{t}__{h}__{m}__{idx}__{key[:8]}"
                         prev = json.loads((out / "result.json").read_text()) if (out / "result.json").exists() else None
-                        if prev and not (a.retry_errors and prev["status"].startswith("error")):
-                            continue
-                        plan.append((tasks[t], models[m], harnesses[h], idx, key, out, route))
+                        if not prev or (a.retry_errors and prev["status"].startswith("error")):
+                            plan.append((tasks[t], models[m], harnesses[h], versions[h], idx, key, out, route))
+    return plan, skipped, hs
+
+
+def estimate(plan, results):
+    """USD: expected spend (past mean cost of the same model × harness, else a third of the cap) and the hard cap."""
+    paid, past, est = [p for p in plan if p[1].provider != "scripted"], report.load(results), 0.0
+    for t, m, h, *_ in paid:
+        seen = [r["cost"] for r in past if r["model"] == m.name and r["harness"] == h.name and r["cost"]]
+        est += sum(seen) / len(seen) if seen else t.max_cost / 3
+    return est, sum(t.max_cost for t, *_ in paid)
+
+
+def cmd_run(a, root):
+    plan, skipped, hs = plan_run(a, root)
     for s in skipped:
         print(f"{YELLOW}skip{END} {s}")
     if not hs:
@@ -92,14 +97,9 @@ def cmd_run(a, root):
     if not plan:
         print("nothing to run: every requested trial already has a result (use --retry-errors to redo errors)")
         return 0
-    paid = [p for p in plan if p[1].provider != "scripted"]
-    past = report.load(results)
-    est = 0.0
-    for t, m, h, *_ in paid:
-        seen = [r["cost"] for r in past if r["model"] == m.name and r["harness"] == h.name and r["cost"]]
-        est += sum(seen) / len(seen) if seen else t.max_cost / 3
-    cap = sum(t.max_cost for t, *_ in paid)
-    print(f"{len(plan)} trials ({len(paid)} paid): estimated ${est:.2f}, hard cap ${min(cap, a.budget or cap):.2f}")
+    results, paid = Path(a.results), sum(m.provider != "scripted" for _, m, *_ in plan)
+    est, cap = estimate(plan, results)
+    print(f"{len(plan)} trials ({paid} paid): estimated ${est:.2f}, hard cap ${min(cap, a.budget or cap):.2f}")
     if paid and est > a.confirm_above and not a.yes:
         if not sys.stdin.isatty():
             print("refusing to spend without confirmation: pass --yes")
@@ -110,28 +110,23 @@ def cmd_run(a, root):
     work = Path(os.environ.get("HEV_WORK") or tempfile.gettempdir()) / "hev" / nonce
     check_ancestors(work.parent)
     work.mkdir(parents=True)
-    run_dir = results / "gateway" / nonce
-    used = {m.name: m for _, m, *_ in plan}
-    t_start, done = time.monotonic(), 0
+    run_dir, used = results / "gateway" / nonce, {m.name: m for _, m, *_ in plan}
+    t_start, patches = time.monotonic(), {}
     try:
         with Gateway(run_dir, used, root, nonce, work, budget=a.budget, canary=canary).start() as gw:
             for m in used.values():
-                if m.provider != "scripted":
-                    err = gw.preflight(m)
-                    if err:
-                        print(f"{RED}preflight failed for {m.name}{END} ({m.provider}/{m.id}): {err}")
-                        return 2
-            patches = {}
-            for t, m, h, idx, key, out, route in plan:
-                done += 1
+                if m.provider != "scripted" and (err := gw.preflight(m)):
+                    print(f"{RED}preflight failed for {m.name}{END} ({m.provider}/{m.id}): {err}")
+                    return 2
+            for done, (t, m, h, version, idx, key, out, route) in enumerate(plan, 1):
                 label = f"[{done}/{len(plan)}] {t.name} {h.name}×{m.name}{f' ({route})' if a.route else ''} #{idx}"
                 if f"hev-{m.name}" in gw.dead_models():
                     print(f"{label} {YELLOW}skipped: {m.name} out of quota{END}")
                     continue
                 if m.provider == "scripted" and t.name not in patches:
                     patches[t.name] = solution_patch(t) or ""
-                r = run_trial(task=t, model=m, harness=h, harness_version=versions[h.name], idx=idx,
-                              trial_id=key[:16], run_nonce=nonce, out=out, gateway=gw, work_root=work,
+                r = run_trial(task=t, model=m, harness=h, harness_version=version, idx=idx, trial_id=key[:16],
+                              run_nonce=nonce, out=out, gateway=gw, work_root=work,
                               scripted_patch=patches.get(t.name), fault=a.fault, keep=a.keep, route=route,
                               canary=canary)
                 color = GREEN if r["status"] == "pass" else RED if not r["status"].startswith("error") else YELLOW
@@ -144,7 +139,7 @@ def cmd_run(a, root):
         shutil.rmtree(work, ignore_errors=True)
     print(f"done in {time.monotonic() - t_start:.0f}s\n")
     if a.route:                                   # a route check: the verdict is "every trial passed"
-        rs = [json.loads((p[5] / "result.json").read_text()) for p in plan if (p[5] / "result.json").exists()]
+        rs = [json.loads((out / "result.json").read_text()) for *_, out, _ in plan if (out / "result.json").exists()]
         return 0 if len(rs) == len(plan) and all(r["status"] == "pass" for r in rs) else 1
     summary = report.summarize([r for r in report.load(results) if r["model"] in used and r["harness"] in hs])
     print(report.render(summary))
@@ -250,46 +245,41 @@ def cmd_regrade(a, root):
 def cmd_doctor(a, root):
     ok = True
 
-    def line(good, what, fix=""):
+    def check(good, what, fix="", blocking=True):
         nonlocal ok
-        ok &= good
-        print(f"  {GREEN + '✓' if good else RED + '✗'}{END} {what}" + (f"  {DIM}→ {fix}{END}" if fix and not good else ""))
+        ok &= good or not blocking
+        mark = GREEN + "✓" if good else RED + "✗" if blocking else YELLOW + "!"
+        print(f"  {mark}{END} {what}" + (f"  {DIM}→ {fix}{END}" if fix and not good else ""))
 
     print("basics")
-    line(sys.version_info >= (3, 11), f"python {sys.version.split()[0]}", "needs Python 3.11+")
-    line(bool(shutil.which("git")), "git", "install git")
+    check(sys.version_info >= (3, 11), f"python {sys.version.split()[0]}", "needs Python 3.11+")
+    check(bool(shutil.which("git")), "git", "install git")
     lv = subprocess.run([litellm_bin(), "--version"], capture_output=True, text=True).stdout \
         if Path(litellm_bin()).exists() else ""
-    line(LITELLM_VERSION in lv, f"litellm {LITELLM_VERSION}", "./hev install --litellm")
-    line(bool(offline_prefix()), "offline verification (unshare -rn)", "verifiers will run with network access")
+    check(LITELLM_VERSION in lv, f"litellm {LITELLM_VERSION}", "./hev install --litellm")
+    check(bool(offline_prefix()), "offline verification (unshare -rn)", "verifiers will run with network access")
     try:
         check_ancestors(Path(os.environ.get("HEV_WORK") or tempfile.gettempdir()))
-        line(True, "work folder has no instruction files above it")
+        check(True, "work folder has no instruction files above it")
     except ConfigError as e:
-        line(False, str(e))
+        check(False, str(e))
     try:
         models, harnesses, tasks = load_models(root / "models.toml"), load_harnesses(root), load_tasks(root)
-        line(True, f"config: {len(models)} models, {len(harnesses)} harnesses, {len(tasks)} tasks")
+        check(True, f"config: {len(models)} models, {len(harnesses)} harnesses, {len(tasks)} tasks")
     except ConfigError as e:
-        line(False, f"config: {e}")
-        return 1
+        check(False, f"config: {e}")
     if not ok:
         return 1
-
-    def warn(good, what, fix):                 # not blocking: the $0 smoke test needs no keys
-        print(f"  {GREEN + '✓' if good else YELLOW + '!'}{END} {what}" + (f"  {DIM}→ {fix}{END}" if not good else ""))
-
     env = {**os.environ, **load_dotenv(root / ".env")}
-    print("keys (needed for paid models only)")
-    from .config import PROVIDERS
+    print("keys (needed for paid models only)")        # keys and harnesses only warn: the $0 smoke test needs no keys
     for prov in sorted({m.provider for m in models.values()} - {"scripted"}):
         k = PROVIDERS[prov]["key_env"]
-        warn(bool(env.get(k)), f"{prov}: {k}", f"add {k}=... to {root / '.env'}")
+        check(bool(env.get(k)), f"{prov}: {k}", f"add {k}=... to {root / '.env'}", blocking=False)
     print("harnesses")
     for name, h in harnesses.items():
         v = installed_version(h)
-        warn(bool(v) and h.version in v, f"{name} {h.version}" + (f" (found {v})" if v and h.version not in v else ""),
-             f"./hev install {name}")
+        found = f" (found {v})" if v and h.version not in v else ""
+        check(bool(v) and h.version in v, f"{name} {h.version}{found}", f"./hev install {name}", blocking=False)
     for p in ("/etc/claude-code/managed-settings.json", "/etc/gemini-cli/settings.json"):
         if Path(p).exists():
             print(f"  {YELLOW}!{END} {p} exists: machine-wide policy applies to every trial")
@@ -297,14 +287,12 @@ def cmd_doctor(a, root):
         return 0
     print("smoke ($0, scripted model, every route of every installed harness, decoy instruction files planted)")
     with tempfile.TemporaryDirectory(prefix="hev-doctor-") as results:
-        return cmd_run(argparse.Namespace(models="scripted", harnesses=a.harnesses, tasks=a.tasks or "00-smoke",
-                                          trials=1, results=results, retry_errors=True, seed=0, budget=None,
-                                          yes=True, confirm_above=0, canary=None, fault=None, keep=False,
-                                          route="all"), root)
+        return cmd_run(parser(root).parse_args(["run", "-m", "scripted", "--route", "all", "--yes", "--retry-errors",
+                                                "--results", results, "-t", a.tasks or "00-smoke",
+                                                *(["-H", a.harnesses] if a.harnesses else [])]), root)
 
 
-def main(argv=None):
-    root = Path(os.environ.get("HEV_ROOT") or Path(__file__).resolve().parent.parent)
+def parser(root):
     p = argparse.ArgumentParser(prog="hev", description=__doc__)
     sub = p.add_subparsers(dest="cmd", required=True)
     r = sub.add_parser("run", help="run tasks × models × harnesses")
@@ -318,9 +306,8 @@ def main(argv=None):
     r.add_argument("--retry-errors", action="store_true", help="re-run trials that ended in an infra error")
     r.add_argument("--keep", action="store_true", help="keep trial work folders (debugging)")
     r.add_argument("--seed", type=int, default=0)
-    r.add_argument("--fault", help=argparse.SUPPRESS)
-    r.add_argument("--canary", help=argparse.SUPPRESS)
-    r.add_argument("--route", help=argparse.SUPPRESS)      # force a protocol, or "all": test every declared route
+    for flag in ("--fault", "--canary", "--route"):   # test hooks: a scripted-model fault, a fixed canary token, and a
+        r.add_argument(flag, help=argparse.SUPPRESS)  # forced protocol route ("all": every route the harness declares)
     rep = sub.add_parser("report", help="compare harnesses per model from saved results")
     rep.add_argument("--md", action="store_true")
     rep.add_argument("--json", action="store_true")
@@ -354,18 +341,17 @@ def main(argv=None):
     nw.add_argument("--start", help="folder with the starting files")
     for sp in (r, rep, d, sub.choices["regrade"]):
         sp.add_argument("--results", default=str(root / "results"), help=argparse.SUPPRESS)
-    a = p.parse_args(argv)
-    sys.stdout.reconfigure(line_buffering=True)          # progress shows up live in logs and pipes too
+    return p
 
-    def on_term(*_):                     # `kill hev` cleans up exactly like Ctrl-C
-        raise KeyboardInterrupt
-    signal.signal(signal.SIGTERM, on_term)
+
+def main(argv=None):
+    root = Path(os.environ.get("HEV_ROOT") or Path(__file__).resolve().parent.parent)
+    a = parser(root).parse_args(argv)
+    sys.stdout.reconfigure(line_buffering=True)          # progress shows up live in logs and pipes too
+    signal.signal(signal.SIGTERM, signal.default_int_handler)    # `kill hev` cleans up exactly like Ctrl-C
     try:
         return {"run": cmd_run, "report": cmd_report, "install": cmd_install, "doctor": cmd_doctor,
                 "check-task": cmd_check_task, "regrade": cmd_regrade, "task": cmd_task}[a.cmd](a, root)
-    except ConfigError as e:
-        print(f"{RED}config error{END}: {e}")
-        return 2
-    except RuntimeError as e:
-        print(f"{RED}error{END}: {e}")
+    except (ConfigError, RuntimeError) as e:
+        print(f"{RED}{'config error' if isinstance(e, ConfigError) else 'error'}{END}: {e}")
         return 2
