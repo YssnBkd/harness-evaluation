@@ -25,7 +25,7 @@ python3 -m unittest tests.test_e2e                       # real gateway + script
 python3 -m unittest tests.test_units.Classify.test_statuses   # a single test
 ```
 
-There is no linter or build step. Hidden `run` flags: `--fault {429,429once,quota,500,400,hang,midstream}` makes the scripted model misbehave (used by the e2e tests), `--route <protocol|all>` forces a route (`all` runs every route each harness declares; `doctor` uses it, so every route is tested at $0), `--canary <string>` replaces the run's random canary token, and `--results <dir>`. Environment variables: `HEV_ROOT` points the runner at another root (tests use it) and `HEV_WORK` sets where trial work folders go (default `$TMPDIR/hev/<nonce>`).
+There is no linter or build step. CI (`.github/workflows/ci.yml`, on every push and nightly) runs the unit and end-to-end tests, `check-task`, and `doctor` for the three npm-installed harnesses. Hidden `run` flags: `--fault {429,429once,quota,500,400,hang,midstream}` makes the scripted model misbehave (used by the e2e tests), `--route <protocol|all>` forces a route (`all` runs every route each harness declares; `doctor` uses it, so every route is tested at $0), `--canary <string>` replaces the run's random canary token, and `--results <dir>`. Environment variables: `HEV_ROOT` points the runner at another root (tests use it) and `HEV_WORK` sets where trial work folders go (default `$TMPDIR/hev/<nonce>`).
 
 Use `-m scripted` to test runner, gateway, or harness changes. Only run a paid model when the user asks for one.
 
