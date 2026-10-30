@@ -1,0 +1,35 @@
+name: ci
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "17 4 * * *"     # nightly: a task repo, npm package or the gateway pin can break without a commit here
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      # Grading runs offline under `unshare -rn`; Ubuntu 24.04 blocks unprivileged user namespaces by default.
+      - name: Allow offline grading
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+      - name: Unit tests
+        run: python -m unittest -v tests.test_units
+      # Hermes (2.7 GB) and agy (closed-source binary) are left out of CI; the npm harnesses cover the pipeline.
+      - name: Install the gateway and the npm harnesses
+        run: ./hev install 'claude-code,opencode,dsh'
+      - name: End-to-end tests (real gateway, scripted model, fake agent)
+        run: python -m unittest -v tests.test_e2e
+      - name: Every task is well-formed (starting code fails, solution passes 3/3)
+        run: ./hev check-task
+      - name: Smoke test, every route of every installed harness ($0)
+        run: ./hev doctor -H 'claude-code,opencode,dsh'
