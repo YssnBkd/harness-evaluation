@@ -127,7 +127,7 @@ def write_toml(dest, header, prompt, repo, verify, hidden=False, expect=(), tags
 def fresh(dest):
     """The new task folder; removed again if making it fails halfway."""
     if dest.exists():
-        raise ConfigError(f"{dest}: already exists (pick another --name)")
+        raise ConfigError(f"{dest}: already exists (pick another name)")
     try:
         dest.mkdir(parents=True)
         yield dest
@@ -173,50 +173,55 @@ def clean(text):
     return re.sub(r"<!--.*?-->", "", text or "", flags=re.S).strip()
 
 
+def header(cmd, todo, name):
+    return f"Made by `hev task {cmd}` on {time.strftime('%Y-%m-%d')}. {todo}, then run ./hev check-task {name}"
+
+
+def _review_findings(owner, repo, n, src, head):
+    """The revision the reviewers commented on (fetched if needed), and their comments on it as expected findings."""
+    expect, cs = [], [c for c in api(f"repos/{owner}/{repo}/pulls/{n}/comments?per_page=100")
+                      if c.get("original_line") and c.get("side", "RIGHT") == "RIGHT"]
+    if cs:
+        at = Counter(c["original_commit_id"] for c in cs).most_common(1)[0][0]
+        if git(src, "cat-file", "-e", f"{at}^{{commit}}", check=False).returncode == 0 or \
+                git(src, "fetch", "--quiet", "origin", at, check=False).returncode == 0:
+            head = at
+        seen = set()
+        for c in cs:
+            if c["original_commit_id"] != head:
+                continue
+            lines = [c.get("original_start_line") or c["original_line"], c["original_line"]]
+            if (c["path"], *lines) not in seen:
+                seen.add((c["path"], *lines))
+                said = " ".join(clean(c["body"]).split())
+                expect.append({"file": c["path"], "lines": lines, "said": said[:200]})
+    print(f"{len(expect)} review comments on {head[:12]} became expected findings: keep only the real problems")
+    return head, expect
+
+
 def from_pr(root, url, name=None, review=False, verify=None):
     m = re.match(r"https?://github\.com/([^/]+)/([^/]+)/pull/(\d+)", url)
     if not m:
         raise ConfigError(f"{url}: expected a GitHub pull request URL like https://github.com/owner/repo/pull/123")
     owner, repo, n = m.groups()
-    pr, info = api(f"repos/{owner}/{repo}/pulls/{n}"), api(f"repos/{owner}/{repo}")
     dest = Path(root, "tasks", slug(name or f"{repo}-pr{n}"))
-    if dest.exists():
-        raise ConfigError(f"{dest}: already exists (pick another --name)")
-    clone, head = pr["base"]["repo"]["clone_url"], pr["head"]["sha"]
-    src = _git_source(clone, pr["base"]["sha"])
-    git(src, "fetch", "--quiet", "origin", f"pull/{n}/head")
-    base = git(src, "merge-base", pr["base"]["sha"], head).stdout.strip()
-    licence = (info.get("license") or {}).get("spdx_id") or "unknown"
-    print(f"{owner}/{repo}#{n}: {pr['title']!r}, licence {licence}, base {base[:12]}")
-    expect = []
-    if review:                 # review the revision the reviewers commented on, with their comments as findings
-        cs = [c for c in api(f"repos/{owner}/{repo}/pulls/{n}/comments?per_page=100")
-              if c.get("original_line") and c.get("side", "RIGHT") == "RIGHT"]
-        if cs:
-            at = Counter(c["original_commit_id"] for c in cs).most_common(1)[0][0]
-            if git(src, "cat-file", "-e", f"{at}^{{commit}}", check=False).returncode == 0 or \
-                    git(src, "fetch", "--quiet", "origin", at, check=False).returncode == 0:
-                head = at
-            seen = set()
-            for c in cs:
-                if c["original_commit_id"] != head:
-                    continue
-                lines = [c.get("original_start_line") or c["original_line"], c["original_line"]]
-                if (c["path"], *lines) not in seen:
-                    seen.add((c["path"], *lines))
-                    said = " ".join(clean(c["body"]).split())
-                    expect.append({"file": c["path"], "lines": lines, "said": said[:200]})
-        print(f"{len(expect)} review comments on {head[:12]} became expected findings: keep only the real problems")
-    refs = CLOSES.findall(pr["body"] or "") or re.findall(rf"\b{re.escape(owner)}/{re.escape(repo)}#(\d+)\b",
-                                                         pr["body"] or "", re.I)
-    issue = next((api(f"repos/{owner}/{repo}/issues/{k}") for k in refs[:1]), None)
-    src_text = issue or pr
-    prompt = f"{src_text['title']}\n\n{clean(src_text['body'])}".strip()
     with fresh(dest):
+        pr, info = api(f"repos/{owner}/{repo}/pulls/{n}"), api(f"repos/{owner}/{repo}")
+        clone, head = pr["base"]["repo"]["clone_url"], pr["head"]["sha"]
+        src = _git_source(clone, pr["base"]["sha"])
+        git(src, "fetch", "--quiet", "origin", f"pull/{n}/head")
+        base = git(src, "merge-base", pr["base"]["sha"], head).stdout.strip()
+        licence = (info.get("license") or {}).get("spdx_id") or "unknown"
+        print(f"{owner}/{repo}#{n}: {pr['title']!r}, licence {licence}, base {base[:12]}")
+        head, expect = _review_findings(owner, repo, n, src, head) if review else (head, [])
+        refs = CLOSES.findall(pr["body"] or "") or re.findall(rf"\b{re.escape(owner)}/{re.escape(repo)}#(\d+)\b",
+                                                             pr["body"] or "", re.I)
+        issue = next((api(f"repos/{owner}/{repo}/issues/{k}") for k in refs[:1]), None)
+        src_text = issue or pr
+        prompt = f"{src_text['title']}\n\n{clean(src_text['body'])}".strip()
         return build(dest, src, base, head, prompt=prompt, review=review, verify=verify, expect=expect,
                      repo={"git": clone, "rev": base},
-                     header=f"Made by `hev task from-pr {url}` on {time.strftime('%Y-%m-%d')}. Edit the prompt, "
-                            f"check the verify command, then run ./hev check-task {dest.name}",
+                     header=header(f"from-pr {url}", "Edit the prompt, check the verify command", dest.name),
                      notes=f"{url} ({licence})", tags=["from-pr"])
 
 
@@ -229,27 +234,23 @@ def from_commit(root, path, sha, name=None, review=False, verify=None):
     with fresh(dest):
         tree_at(src, base, dest / "fixture")       # a copy: private code never leaves the machine
         return build(dest, src, base, head, prompt=message, review=review, verify=verify, repo={"path": "fixture"},
-                     header=f"Made by `hev task from-commit {path} {sha}` on {time.strftime('%Y-%m-%d')}. Edit the "
-                            f"prompt (it is the commit message), then run ./hev check-task {dest.name}",
-                     tags=["from-commit"])
+                     header=header(f"from-commit {path} {sha}", "Edit the prompt (it is the commit message)",
+                                   dest.name), tags=["from-commit"])
 
 
 def new(root, name, prompt=None, verify=None, start=None):
     dest = Path(root, "tasks", slug(name))
-    if dest.exists():
-        raise ConfigError(f"{dest}: already exists")
-    prompt = prompt or ask("What should the agent do? (the prompt it gets)")
-    verify = verify or ask("How do we check it's done? (a shell command run in the repo; exit 0 = solved)")
-    start = start or ask("Folder with the starting files (empty: start from an empty repo)", "")
-    if not prompt:
-        raise ConfigError("a task needs a prompt: pass --prompt or answer the question")
     with fresh(dest):
+        prompt = prompt or ask("What should the agent do? (the prompt it gets)")
+        verify = verify or ask("How do we check it's done? (a shell command run in the repo; exit 0 = solved)")
+        start = start or ask("Folder with the starting files (empty: start from an empty repo)", "")
+        if not prompt:
+            raise ConfigError("a task needs a prompt: pass --prompt or answer the question")
         if start:
             shutil.copytree(start, dest / "fixture", ignore=shutil.ignore_patterns(".git"))
         else:
             (dest / "fixture").mkdir()
             (dest / "fixture" / "README.md").write_text(f"# {name}\n")
-        write_toml(dest, f"Made by `hev task new` on {time.strftime('%Y-%m-%d')}. Put the solved files in solution/ "
-                         f"(laid over fixture/), tests the agent must not see in hidden/, then run ./hev check-task "
-                         f"{dest.name}", prompt, {"path": "fixture"}, {"cmd": verify or ""})
+        write_toml(dest, header("new", "Put the solved files in solution/ (laid over fixture/), tests the agent must "
+                                "not see in hidden/", dest.name), prompt, {"path": "fixture"}, {"cmd": verify or ""})
         return dest

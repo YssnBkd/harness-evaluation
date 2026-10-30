@@ -4,7 +4,7 @@ Every problem is reported as `file: key: problem`, and unknown keys are errors (
 change an experiment).
 """
 import hashlib, re, tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 
 CACHE = Path.home() / ".cache" / "hev"
@@ -54,7 +54,7 @@ def tree_hash(path):
 class Model:
     name: str
     provider: str
-    id: str
+    id: str = "scripted"
     price: dict = field(default_factory=dict)
     params: dict = field(default_factory=dict)
     context: int = 200_000
@@ -72,14 +72,14 @@ def load_models(path):
     models = {}
     for name, t in _load(path).items():
         where = f"{path}: [{name}]"
-        _check(where, t, {"provider", "id", "price", "params", "context", "max_output", "notes"}, ["provider"])
+        # the TOML keys are the dataclass's fields (each named once, there) plus documentation-only keys
+        _check(where, t, {f.name for f in fields(Model)} - {"name"} | {"notes"}, ["provider"])
         if t["provider"] not in PROVIDERS:
             raise ConfigError(f"{where}: provider: unknown {t['provider']!r} (known: {', '.join(PROVIDERS)})")
         if t["provider"] != "scripted" and "id" not in t:
             raise ConfigError(f"{where}: id: required")
         _check(f"{where}.price", t.get("price", {}), {"in", "out", "cache_read", "cache_write"})
-        models[name] = Model(name, t["provider"], t.get("id", "scripted"), t.get("price", {}), t.get("params", {}),
-                             t.get("context", 200_000), t.get("max_output", 32_000))
+        models[name] = Model(name, **{k: v for k, v in t.items() if k != "notes"})
     return models
 
 
@@ -159,11 +159,9 @@ class Task:
 
 
 def load_task(d):
-    d = Path(d)
-    path = d / "task.toml"
+    d, path = Path(d), Path(d, "task.toml")
     t, where = _load(path), str(path)
-    _check(where, t, {"prompt", "timeout", "max_requests", "max_cost", "repo", "verify", "expect", "tags", "notes"},
-           ["prompt", "verify"])
+    _check(where, t, {f.name for f in fields(Task)} - {"name", "dir", "hash"} | {"tags", "notes"}, ["prompt", "verify"])
     repo = t.get("repo", {"path": "fixture"})
     _check(f"{where}: repo", repo, {"path", "git", "rev", "setup", "patch"})
     if ("path" in repo) == ("git" in repo):
@@ -180,8 +178,8 @@ def load_task(d):
         raise ConfigError(f"{where}: expect: a review task needs at least one [[expect]] finding")
     if (d / ".env").exists() or ("path" in repo and (d / repo["path"] / ".env").exists()):
         raise ConfigError(f"{where}: tasks may not ship a .env file (some harnesses load it as credentials)")
-    return Task(d.name, d, t["prompt"].strip(), t.get("timeout", 900), t.get("max_requests", 150),
-                t.get("max_cost", 3.0), repo, verify, t.get("expect", []), tree_hash(d))
+    return Task(d.name, d, **{k: v for k, v in t.items() if k not in ("tags", "notes")}
+                | {"prompt": t["prompt"].strip(), "repo": repo}, hash=tree_hash(d))
 
 
 def load_tasks(root):

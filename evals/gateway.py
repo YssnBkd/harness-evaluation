@@ -5,7 +5,6 @@ from pathlib import Path
 from .config import PROVIDERS
 
 LITELLM_VERSION = "1.106.6"
-HOOKS_DIR = Path(__file__).parent
 
 
 def litellm_bin():
@@ -54,10 +53,6 @@ class Gateway:
         self.url = f"http://127.0.0.1:{self.port}"
         self.proc = None
 
-    def missing_keys(self, env):
-        need = {PROVIDERS[m.provider]["key_env"] for m in self.models.values() if PROVIDERS[m.provider]["key_env"]}
-        return sorted(k for k in need if not env.get(k))
-
     def start(self, log=print):
         (self.dir / "keys").mkdir(parents=True, exist_ok=True)
         cfg = {"model_list": [deployment(m, self.scripted_port) for m in self.models.values()],
@@ -73,11 +68,11 @@ class Gateway:
         env.update(HEV_RUN_DIR=str(self.dir), HEV_SCRIPTED_PORT=str(self.scripted_port), HEV_PARENT_PID=str(os.getpid()),
                    HEV_RUN_NONCE=self.nonce, HEV_WORK_DIR=str(self.work),
                    HEV_BUDGET=str(self.budget or ""), HEV_CANARY=self.canary or "",
-                   PYTHONPATH=str(HOOKS_DIR), LITELLM_MASTER_KEY="sk-admin-" + secrets.token_hex(16),
+                   PYTHONPATH=str(Path(__file__).parent), LITELLM_MASTER_KEY="sk-admin-" + secrets.token_hex(16),
                    LITELLM_LOCAL_MODEL_COST_MAP="True", LITELLM_LOCAL_ANTHROPIC_BETA_HEADERS="True",
                    LITELLM_LOCAL_BLOG_POSTS="True")
-        missing = self.missing_keys(env)
-        if missing:
+        need = {PROVIDERS[m.provider]["key_env"] for m in self.models.values() if PROVIDERS[m.provider]["key_env"]}
+        if missing := sorted(k for k in need if not env.get(k)):
             raise RuntimeError(f"missing API key(s): {', '.join(missing)} — put them in {self.root / '.env'}")
         logf = open(self.dir / "gateway.log", "ab")
         self.proc = subprocess.Popen([litellm_bin(), "--config", str(self.dir / "config.yaml"), "--host", "127.0.0.1",
