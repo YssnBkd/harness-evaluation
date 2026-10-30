@@ -1,0 +1,41 @@
+name = "Hermes Agent"
+version = "0.22.2"
+notes = "Installed from its own pinned checkout. Each trial is a profile under one shared data root, so Python dependencies install once."
+# The installer runs with HOME inside the prefix: its launcher and shell-rc edits stay out of your home.
+install = """
+mkdir -p {prefix}/home \
+  && curl -fsSL -o {prefix}/install.sh https://raw.githubusercontent.com/NousResearch/hermes-agent/v{version}/scripts/install.sh \
+  && env -u XDG_CONFIG_HOME -u XDG_DATA_HOME -u XDG_CACHE_HOME -u XDG_STATE_HOME HOME={prefix}/home CI=1 \
+     bash {prefix}/install.sh --branch v{version} --dir {prefix}/hermes-agent --hermes-home {prefix}/root \
+     --non-interactive --skip-browser --skip-computer-use
+"""
+bin = "{prefix}/hermes-agent/.hermes/bin/hermes"
+cmd = ["{bin}", "chat", "-q", "{prompt}", "--yolo", "--max-turns", "{max_requests}", "--format", "stream-json"]
+cleanup = ["{prefix}/root/profiles/{trial}"]
+
+[env]
+HERMES_HOME = "{prefix}/root/profiles/{trial}"
+HERMES_WRITE_SAFE_ROOT = "{workdir}"
+
+[files."{prefix}/root/profiles/{trial}/config.yaml"]
+auth = { adopt_external_logins = false }       # otherwise it borrows (and refreshes) your Claude Code login
+updates = { check = false }
+memory = { memory_enabled = false, user_profile_enabled = false }
+auxiliary = { title_generation = { enabled = false }, background_review = { enabled = false } }
+curator = { enabled = false }
+telemetry = { shared_metrics = { enabled = false } }
+
+[route.openai.files."{prefix}/root/profiles/{trial}/config.yaml".model]
+provider = "custom"
+base_url = "{base_url}"
+api_key = "{key}"
+default = "{model}"
+context_length = "{model.context}"
+
+[route.anthropic.files."{prefix}/root/profiles/{trial}/config.yaml".model]
+provider = "custom"
+api_mode = "anthropic_messages"
+base_url = "{base_url}"
+api_key = "{key}"
+default = "{model}"
+context_length = "{model.context}"

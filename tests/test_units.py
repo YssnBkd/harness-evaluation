@@ -1,12 +1,14 @@
 """Fast tests: no gateway, no network."""
 import json, shutil, subprocess, sys, tempfile, unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-from evals import report
-from evals.config import ConfigError, fill, load_harness, load_task
-from evals.trial import classify, diff_against, materialize, grade, solution_patch
+from evals import author, report
+from evals.cli import check_task
+from evals.config import ConfigError, Model, fill, load_harness, load_task
+from evals.trial import INSTRUCTION_FILES, classify, diff_against, materialize, grade, plant_decoys, solution_patch
 from graders.review import parse, score_review
 
 
@@ -52,6 +54,15 @@ class Config(unittest.TestCase):
         self.assertEqual(fill(["{a}", {"k{a}": '{"json": 1}'}], {"a": "x"}), ["x", {"kx": '{"json": 1}'}])
         with self.assertRaisesRegex(ConfigError, "unknown placeholder {nope}"):
             fill("{nope}", {"a": 1})
+        self.assertEqual(fill({"ctx": "{n}", "s": "n={n}", "p": "{p}"}, {"n": 5, "p": Path("/a")}),
+                         {"ctx": 5, "s": "n=5", "p": "/a"}, "a lone numeric placeholder stays a number")
+
+    def test_route_choice(self):
+        p = write(self.d / "h.toml", 'name="x"\nversion="1"\ninstall="true"\nbin="/b"\ncmd=["x"]\n'
+                                     '[route.openai]\n[route.anthropic]\n[scripted]\nmodel="m"\n')
+        h, gem, claude = load_harness(p), Model("g", "gemini", "g"), Model("c", "anthropic", "c")
+        self.assertEqual((h.route_for(gem), h.route_for(claude)), ("openai", "anthropic"))
+        self.assertEqual((h.route_for(gem, "anthropic"), h.route_for(gem, "gemini")), ("anthropic", None))
 
 
 class Grading(unittest.TestCase):
@@ -82,6 +93,98 @@ class Grading(unittest.TestCase):
         self.assertIn("X = 2", patch)
         self.assertNotIn("harness dropping", patch)
         self.assertTrue(grade(self.task, patch)[0], "hidden tests must overwrite the agent's copy")
+
+
+class Setup(unittest.TestCase):
+    def test_setup_output_is_not_the_agents_change(self):
+        d = Path(tempfile.mkdtemp())
+        t = d / "t"
+        write(t / "fixture" / "f.py", "X = 1\n")
+        write(t / "task.toml", 'prompt="p"\n[repo]\npath="fixture"\nsetup="mkdir -p .venv && touch .venv/lib && '
+                               'echo \'# setup\' >> f.py"\n[verify]\ncmd="grep -q \'X = 2\' f.py"\n')
+        task = load_task(t)
+        w = d / "w"
+        base = materialize(task, w)
+        (w / "f.py").write_text((w / "f.py").read_text().replace("X = 1", "X = 2"))
+        patch = diff_against(w, base)
+        self.assertNotIn(".venv", patch)
+        self.assertNotIn("+# setup", patch)
+        self.assertTrue(grade(task, patch)[0], "the patch must apply on top of a fresh setup")
+        plant_decoys([d], "tok123")
+        self.assertTrue(all("tok123" in (d / f).read_text() for f in INSTRUCTION_FILES))
+        shutil.rmtree(d)
+
+
+def git_repo(d, files, message):
+    for rel, text in files.items():
+        write(d / rel, text)
+    subprocess.run(["git", "init", "-q"], cwd=d)
+    subprocess.run(["git", "add", "-A"], cwd=d)
+    subprocess.run(["git", "-c", "user.name=a", "-c", "user.email=a@b", "commit", "-qm", message], cwd=d)
+
+
+@mock.patch.object(author, "ask", lambda question, default=None: default)     # never wait for a terminal
+class Author(unittest.TestCase):
+    def setUp(self):
+        self.d = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.d)
+
+    def guess(self, files, tests):
+        d = Path(tempfile.mkdtemp(dir=self.d))
+        for rel, text in files.items():
+            write(d / rel, text)
+        return author.guess_verify(d, tests)
+
+    def test_guess_verify(self):
+        self.assertEqual(self.guess({}, ["tests/test_a.py"]), ("python3 -m unittest tests/test_a.py", None))
+        self.assertEqual(self.guess({"src/p/__init__.py": ""}, ["tests/test_a.py"])[0],
+                         "PYTHONPATH=src python3 -m unittest tests/test_a.py")
+        self.assertEqual(self.guess({"conftest.py": "", "pyproject.toml": "[project]\n"}, ["tests/test_a.py"]),
+                         (".venv/bin/python -m pytest -q tests/test_a.py",
+                          "uv venv -q .venv && uv pip install -q --python .venv/bin/python pytest -e ."))
+        self.assertEqual(self.guess({"pyproject.toml": "[project.entry-points.'markdown.extensions']\n"},
+                                    ["tests/test_a.py"])[0], ".venv/bin/python -m unittest tests/test_a.py")
+        self.assertEqual(self.guess({"package.json": '{"scripts": {"test": "jest"}}', "package-lock.json": "{}"},
+                                    ["src/a.test.js"]), ("npm test", "npm ci --no-audit --no-fund"))
+        self.assertEqual(self.guess({}, ["a.test.mjs"]), ("node --test a.test.mjs", None))
+        self.assertEqual(self.guess({}, ["pkg/a_test.go", "b_test.go"]), ("go test . ./pkg", None))
+        self.assertEqual(self.guess({}, []), ("", None))
+
+    def test_from_commit_makes_a_checked_code_task(self):
+        repo = self.d / "repo"
+        git_repo(repo, {"calc.py": "def add(a, b):\n    return a - b\n",
+                        "tests/test_calc.py": "import unittest\nfrom calc import add\n\n\n"
+                                              "class T(unittest.TestCase):\n    def test_zero(self):\n"
+                                              "        self.assertEqual(add(0, 0), 0)\n"}, "start")
+        write(repo / "calc.py", "def add(a, b):\n    return a + b\n")
+        write(repo / "tests/test_calc.py", (repo / "tests/test_calc.py").read_text() +
+              "\n    def test_add(self):\n        self.assertEqual(add(2, 3), 5)\n")
+        subprocess.run(["git", "-c", "user.name=a", "-c", "user.email=a@b", "commit", "-qam",
+                        'Fix add: it "subtracted"\n\nadd(2, 3) must be 5.'], cwd=repo)
+        root = self.d / "root"
+        d = author.from_commit(root, repo, "HEAD", name="Calc Fix")
+        self.assertEqual(d.name, "calc-fix")
+        task = load_task(d)
+        self.assertEqual(task.verify, {"cmd": "python3 -m unittest tests/test_calc.py", "hidden": "hidden"})
+        self.assertIn('it "subtracted"', task.prompt)
+        self.assertIn("test_add", (d / "hidden/tests/test_calc.py").read_text())
+        self.assertNotIn("test_add", (d / "fixture/tests/test_calc.py").read_text())
+        self.assertEqual(check_task(task, repeat=1), [])
+        with self.assertRaisesRegex(ConfigError, "already exists"):
+            author.from_commit(root, repo, "HEAD", name="calc-fix")
+        r = author.from_commit(root, repo, "HEAD", name="calc-review", review=True)
+        self.assertTrue((r / "change.diff").read_text().startswith("diff --git"))
+        with self.assertRaisesRegex(ConfigError, "review task needs at least one"):
+            load_task(r)                       # the user adds the findings to expect
+
+    def test_new_writes_valid_toml(self):
+        tricky = 'Say "hi" \\ then """ and \\n literally.'
+        d = author.new(self.d, "My Task", prompt=tricky, verify="test -f done")
+        self.assertEqual(load_task(d).prompt, tricky)
+        self.assertEqual(load_task(d).verify["cmd"], "test -f done")
+        self.assertIn("no reference solution", check_task(load_task(d), repeat=1)[0])
 
 
 class Classify(unittest.TestCase):

@@ -1,0 +1,31 @@
+prompt = """
+Review the change in the last commit (HEAD~1..HEAD) for bugs. Do not modify the code.
+Write your findings to REVIEW.md, one per line, as `path:line: what is wrong`, using line numbers of the files as they
+are now. Report only real problems, most important first.
+"""
+tags = ["python", "review", "security"]
+
+[repo]
+path = "fixture"
+patch = "change.diff"
+
+[verify]
+cmd = "review"
+
+# SQL injection: name_prefix comes from the search box and is formatted into the query with an f-string; pass it as a parameter (LIKE ? with name_prefix + '%')
+[[expect]]
+file = "members/db.py"
+lines = [45, 45]
+any = ["inject", "parameter", "placeholder", "f-string", "fstring", "interpolat", "sanitiz", "escap", "untrusted", "user input", "user-controlled"]
+
+# the SELECT returns (id, name, email) but the dict reads row[1] as email and row[2] as name, so name and email are swapped
+[[expect]]
+file = "members/db.py"
+lines = [52, 52]
+any = ["swap", "mismatch", "column", "mixed up", "transpos", "reversed", "wrong key", "wrong field", "wrong index", "row[1]", "row[2]"]
+
+# a user who never logged in has no rows, so rows[0] raises IndexError instead of returning None as documented
+[[expect]]
+file = "members/db.py"
+lines = [32, 32]
+any = ["indexerror", "index error", "empty", "no rows", "never logged", "no login", "none", "fetchone"]

@@ -1,0 +1,71 @@
+diff --git a/docs/changelog.md b/docs/changelog.md
+index cd6b79b..95e4ebf 100644
+--- a/docs/changelog.md
++++ b/docs/changelog.md
+@@ -15,6 +15,7 @@ See the [Contributing Guide](contributing.md) for details.
+ ### Fixed
+ 
+ * Fix an issue with excessive backtracking when matching inline code blocks (#1617).
++* Fix quadratic rendering time when a paragraph contains many inline links (#1619).
+ 
+ ## [3.10.3] - 2026-07-30
+ 
+diff --git a/markdown/treeprocessors.py b/markdown/treeprocessors.py
+index 9a27446..4d2f318 100644
+--- a/markdown/treeprocessors.py
++++ b/markdown/treeprocessors.py
+@@ -323,12 +323,17 @@ class InlineProcessor(Treeprocessor):
+         placeholder = self.__stashNode(node, pattern.type())
+ 
+         if new_style:
++            # Return the index just past the inserted placeholder so the
++            # next call scans only the unprocessed tail. Scanning from 0
++            # after every match makes repeated inline patterns quadratic.
+             return "{}{}{}".format(data[:start],
+-                                   placeholder, data[end:]), True, 0
++                                   placeholder, data[end:]), True, start + len(placeholder)
+         else:  # pragma: no cover
+             return "{}{}{}{}".format(leftData,
+                                      match.group(1),
+-                                     placeholder, match.groups()[-1]), True, 0
++                                     placeholder, match.groups()[-1]), True, (
++                len(leftData) + len(match.group(1)) + len(placeholder)
++            )
+ 
+     def __build_ancestors(self, parent: etree.Element | None, parents: list[str]) -> None:
+         """Build the ancestor list."""
+diff --git a/tests/test_syntax/inline/test_links.py b/tests/test_syntax/inline/test_links.py
+index e57bd99..475f89b 100644
+--- a/tests/test_syntax/inline/test_links.py
++++ b/tests/test_syntax/inline/test_links.py
+@@ -21,6 +21,8 @@ License: BSD (see LICENSE.md for details).
+ 
+ from markdown.test_tools import TestCase
+ 
++import time
++
+ 
+ class TestInlineLinks(TestCase):
+ 
+@@ -434,3 +436,21 @@ class TestReferenceLinks(TestCase):
+                 """
+             )
+         )
++
++    def test_many_repeated_links(self):
++        # Regression test for #1619: rendering many inline links in one
++        # paragraph used to rescan the unprocessed text from the start after
++        # every match, making conversion quadratic in the number of links.
++        from markdown import Markdown
++
++        text = "[link](x)" * 8192
++        start = time.monotonic()
++        html = Markdown().convert(text)
++        elapsed = time.monotonic() - start
++
++        # The old implementation takes several seconds (or more on slow CI)
++        # for this input; the linear implementation finishes well under a
++        # second on any machine. Allow a generous ceiling to avoid flakes.
++        self.assertLess(elapsed, 5)
++        self.assertEqual(html.count("<a "), 8192)
++        self.assertEqual(html.count("</a>"), 8192)

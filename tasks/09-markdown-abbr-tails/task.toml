@@ -1,0 +1,41 @@
+# Made by `hev task from-pr https://github.com/Python-Markdown/markdown/pull/1677` on 2026-10-30. Edit the prompt, check the verify command, then run ./hev check-task 09-markdown-abbr-tails
+prompt = """
+Empty abbreviation definitions are not ignored after an inline element
+
+With the abbr extension, an empty glossary definition is ignored when the abbreviation occurs in an element's text.
+After an inline element, the same abbreviation is wrapped in an empty-title `<abbr>` element:
+
+```python
+import markdown
+from markdown.extensions.abbr import AbbrExtension
+
+markdown.markdown('*word* HTML', extensions=[AbbrExtension(glossary={'HTML': ''})])
+```
+
+Actual output:
+
+```html
+<p><em>word</em> <abbr title="">HTML</abbr></p>
+```
+
+Expected output:
+
+```html
+<p><em>word</em> HTML</p>
+```
+
+Add a regression test, and an entry in the unreleased section of the changelog.
+
+Fix it. Run any tests you write yourself, then stop.
+"""
+tags = ["from-pr"]
+notes = "https://github.com/Python-Markdown/markdown/pull/1677 (BSD-3-Clause)"
+
+[repo]
+git = "https://github.com/Python-Markdown/markdown.git"
+rev = "e76f0b739b5c081f5b6da56a0a5b647c07e4252c"
+setup = "uv venv -q .venv && uv pip install -q --python .venv/bin/python -e ."   # extensions load through entry points
+
+[verify]
+cmd = ".venv/bin/python -m unittest tests/test_syntax/extensions/test_abbr.py"
+hidden = "hidden"           # copied in only for grading: the agent never sees these files

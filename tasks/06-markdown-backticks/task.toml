@@ -1,0 +1,71 @@
+# Made by `hev task from-pr https://github.com/Python-Markdown/markdown/pull/1669` on 2026-10-30. Edit the prompt, check the verify command, then run ./hev check-task 06-markdown-backticks
+prompt = """
+Unmatched backtick runs swallow text in 3.11 (inline code)
+
+Since 3.11, a backtick string that has no closing string of the same length
+causes the text that follows it to be dropped. In 3.10.3 the backticks are
+output literally and no text is lost.
+
+Input:
+
+```
+a ``` b ````` c
+```
+
+Actual output (3.11, 3.11.1, 3.11.2 and current master `b41e0aa`):
+
+```html
+<p>a <code></code> c</p>
+```
+
+Expected output (3.10.3):
+
+```html
+<p>a ``` b ````` c</p>
+```
+
+Two more inputs that show the same behavior (input, then 3.11.2 output, then
+3.10.3 output):
+
+~~~
+`a`` b
+<p><code></code> b</p>
+<p>`a`` b</p>
+~~~
+
+~~~
+```abc`````
+<p><code>c</code></p>
+<p>```abc`````</p>
+~~~
+
+In each case the text after the opening backticks is lost (`b`, `a` and `ab`
+above), so the rendered document no longer contains content that is in the
+source.
+
+According to the [syntax rules] a code span is opened and closed by backtick
+strings of equal length; a backtick string that is not matched should be
+output literally, as 3.10.3 did.
+
+I bisected this to 7be0cff (#1618, "Fix excessive backtracking when matching
+inline code blocks"). Its parent bb50627 gives the expected output for all
+three inputs and 7be0cff gives the output above. The later rewrite in 8a9ae23
+(#1625) did not change the result.
+
+To reproduce, run `markdown.markdown("a ``` b ````` c")` with no extensions.
+
+[syntax rules]: https://daringfireball.net/projects/markdown/syntax#code
+
+Fix it. Run any tests you write yourself, then stop.
+"""
+tags = ["from-pr"]
+notes = "https://github.com/Python-Markdown/markdown/pull/1669 (BSD-3-Clause)"
+
+[repo]
+git = "https://github.com/Python-Markdown/markdown.git"
+rev = "3d70cfccdc0b54c0783edd5e7d168c5d8bfc0b1e"
+# setup = "..."   # optional: install dependencies (runs before the agent, with network)
+
+[verify]
+cmd = "python3 -m unittest tests/test_syntax/inline/test_code.py"
+hidden = "hidden"           # copied in only for grading: the agent never sees these files

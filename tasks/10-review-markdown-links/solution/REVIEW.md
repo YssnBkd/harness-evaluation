@@ -1,0 +1,1 @@
+tests/test_syntax/inline/test_links.py:454: the test asserts on elapsed wall-clock time (< 5 s), so it is flaky on slow or emulated machines and CI runners; test the scan offset deterministically instead

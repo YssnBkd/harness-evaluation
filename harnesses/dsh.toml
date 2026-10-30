@@ -1,0 +1,28 @@
+name = "DeepSeek Harness"
+version = "0.2.1-rc.5"
+notes = "Pre-release: expect breaking changes. Reads .env from its working directory (tasks may not ship one)."
+install = "npm i --prefix {prefix} --no-fund --no-audit --save-exact @deepseek-ai/dsh@{version}"
+bin = "{prefix}/node_modules/.bin/dsh"
+cmd = ["{bin}", "--profile", "headless", "--json", "{prompt}"]
+
+[env]
+DSH_HOME = "{home}/.dsh"
+DSH_TELEMETRY_MODE = "DISABLED"
+DSH_PERMISSION_MODE = "danger-full-access"
+
+# The headless profile patch, written as JSON (valid YAML). The session-log plugin uploads logs: it stays off.
+[route.openai]
+env = { HEV_KEY = "{key}" }
+files.".dsh/profiles/headless/cordis.patch.yml" = [
+  { id = "llm-pi-ai", config = { providers = { hev = { api = "openai-completions", baseURL = "{base_url}", apiKeyEnv = "HEV_KEY", models = [{ id = "{model}", contextWindow = "{model.context}" }] } } } },
+  { id = "agent-default-model", config = { provider = "hev", model = "{model}" } },
+  { id = "session-log-deepseek", disabled = true },
+]
+
+[route.anthropic]
+env = { HEV_KEY = "{key}" }
+files.".dsh/profiles/headless/cordis.patch.yml" = [
+  { id = "llm-pi-ai", config = { providers = { hev = { api = "anthropic-messages", baseURL = "{base_url}", apiKeyEnv = "HEV_KEY", models = [{ id = "{model}", contextWindow = "{model.context}" }] } } } },
+  { id = "agent-default-model", config = { provider = "hev", model = "{model}" } },
+  { id = "session-log-deepseek", disabled = true },
+]

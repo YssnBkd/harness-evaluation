@@ -2,8 +2,8 @@
 import argparse, fnmatch, hashlib, json, os, random, secrets, shutil, signal, subprocess, sys, tempfile, time
 from pathlib import Path
 
-from . import report
-from .config import ConfigError, fill, load_harnesses, load_models, load_tasks
+from . import author, report
+from .config import ConfigError, fill, load_harnesses, load_models, load_task, load_tasks
 from .gateway import LITELLM_VERSION, Gateway, litellm_bin, load_dotenv
 from .trial import INSTRUCTION_FILES, grade, offline_prefix, run_trial, solution_patch, classify
 
@@ -38,11 +38,11 @@ def installed_version(h):
     return (r.stdout.strip() or r.stderr.strip()).splitlines()[0] if (r.stdout or r.stderr).strip() else "?"
 
 
-def run_key(task, model, harness, version, idx):
+def run_key(task, model, harness, version, idx, route):
     """Everything that could change a trial's outcome. Change any of it and the trial is re-run; otherwise resumed."""
     blob = json.dumps([task.hash, model.entry(), harness.path.read_text(), version, LITELLM_VERSION,
                        hashlib.sha256(HOOKS.read_bytes()).hexdigest(), task.timeout, task.max_requests,
-                       task.max_cost, idx])
+                       task.max_cost, idx, route])
     return hashlib.sha256(blob.encode()).hexdigest()
 
 
@@ -75,14 +75,15 @@ def cmd_run(a, root):
         for t in rng.sample(ts, len(ts)):
             for m in ms:
                 for h in rng.sample(hs, len(hs)):          # interleave harnesses so drift hits all of them alike
-                    if harnesses[h].route_for(models[m]) is None:
-                        continue
-                    key = run_key(tasks[t], models[m], harnesses[h], versions[h], idx)
-                    out = results / "trials" / f"{t}__{h}__{m}__{idx}__{key[:8]}"
-                    prev = json.loads((out / "result.json").read_text()) if (out / "result.json").exists() else None
-                    if prev and not (a.retry_errors and prev["status"].startswith("error")):
-                        continue
-                    plan.append((tasks[t], models[m], harnesses[h], idx, key, out))
+                    routes = list(harnesses[h].routes) if a.route == "all" \
+                        else [harnesses[h].route_for(models[m], a.route)]
+                    for route in filter(None, routes):
+                        key = run_key(tasks[t], models[m], harnesses[h], versions[h], idx, route)
+                        out = results / "trials" / f"{t}__{h}__{m}__{idx}__{key[:8]}"
+                        prev = json.loads((out / "result.json").read_text()) if (out / "result.json").exists() else None
+                        if prev and not (a.retry_errors and prev["status"].startswith("error")):
+                            continue
+                        plan.append((tasks[t], models[m], harnesses[h], idx, key, out, route))
     for s in skipped:
         print(f"{YELLOW}skip{END} {s}")
     if not hs:
@@ -105,7 +106,7 @@ def cmd_run(a, root):
             return 2
         if input("proceed? [y/N] ").strip().lower() != "y":
             return 1
-    nonce = secrets.token_hex(4)
+    nonce, canary = secrets.token_hex(4), a.canary or f"hev-canary-{secrets.token_hex(8)}"
     work = Path(os.environ.get("HEV_WORK") or tempfile.gettempdir()) / "hev" / nonce
     check_ancestors(work.parent)
     work.mkdir(parents=True)
@@ -113,7 +114,7 @@ def cmd_run(a, root):
     used = {m.name: m for _, m, *_ in plan}
     t_start, done = time.monotonic(), 0
     try:
-        with Gateway(run_dir, used, root, nonce, work, budget=a.budget, canary=a.canary).start() as gw:
+        with Gateway(run_dir, used, root, nonce, work, budget=a.budget, canary=canary).start() as gw:
             for m in used.values():
                 if m.provider != "scripted":
                     err = gw.preflight(m)
@@ -121,18 +122,20 @@ def cmd_run(a, root):
                         print(f"{RED}preflight failed for {m.name}{END} ({m.provider}/{m.id}): {err}")
                         return 2
             patches = {}
-            for t, m, h, idx, key, out in plan:
+            for t, m, h, idx, key, out, route in plan:
                 done += 1
+                label = f"[{done}/{len(plan)}] {t.name} {h.name}×{m.name}{f' ({route})' if a.route else ''} #{idx}"
                 if f"hev-{m.name}" in gw.dead_models():
-                    print(f"[{done}/{len(plan)}] {t.name} {h.name}×{m.name} #{idx} {YELLOW}skipped: {m.name} out of quota{END}")
+                    print(f"{label} {YELLOW}skipped: {m.name} out of quota{END}")
                     continue
                 if m.provider == "scripted" and t.name not in patches:
                     patches[t.name] = solution_patch(t) or ""
                 r = run_trial(task=t, model=m, harness=h, harness_version=versions[h.name], idx=idx,
                               trial_id=key[:16], run_nonce=nonce, out=out, gateway=gw, work_root=work,
-                              scripted_patch=patches.get(t.name), fault=a.fault, keep=a.keep)
+                              scripted_patch=patches.get(t.name), fault=a.fault, keep=a.keep, route=route,
+                              canary=canary)
                 color = GREEN if r["status"] == "pass" else RED if not r["status"].startswith("error") else YELLOW
-                print(f"[{done}/{len(plan)}] {t.name} {h.name}×{m.name} #{idx} → {color}{r['status']}{END} "
+                print(f"{label} → {color}{r['status']}{END} "
                       f"{DIM}({r['wall_secs']:.0f}s, {r['requests']} req, ${r['cost']:.3f}){END}")
     except KeyboardInterrupt:
         print("\ninterrupted: finished trials are saved; run the same command again to resume")
@@ -140,6 +143,9 @@ def cmd_run(a, root):
     finally:
         shutil.rmtree(work, ignore_errors=True)
     print(f"done in {time.monotonic() - t_start:.0f}s\n")
+    if a.route:                                   # a route check: the verdict is "every trial passed"
+        rs = [json.loads((p[5] / "result.json").read_text()) for p in plan if (p[5] / "result.json").exists()]
+        return 0 if len(rs) == len(plan) and all(r["status"] == "pass" for r in rs) else 1
     summary = report.summarize([r for r in report.load(results) if r["model"] in used and r["harness"] in hs])
     print(report.render(summary))
     return 0
@@ -175,28 +181,51 @@ def cmd_install(a, root):
     return rc
 
 
+def check_task(t, repeat=3):
+    """Plain-language problems that would make the task useless; empty list = well-formed."""
+    problems = []
+    ok, _, note = grade(t, "")
+    if ok:
+        problems.append("the starting code already passes the check, so this task would be free — "
+                        "make the check fail before the change")
+    sol = solution_patch(t)
+    if sol is None:
+        problems.append("no reference solution (add a solution/ folder or solution.diff) — needed to prove "
+                        "the task is solvable and for the $0 scripted runs")
+    else:
+        for i in range(repeat):
+            with tempfile.NamedTemporaryFile("r", suffix=".log") as log:
+                ok, _, note = grade(t, sol, log.name)
+                if not ok:
+                    tail = "\n      ".join(log.read().strip().splitlines()[-6:])
+                    problems.append(f"the reference solution fails the check (run {i + 1}/{repeat}: {note})"
+                                    + (f"; last lines of its output:\n      {tail}" if tail else ""))
+                    break
+    return problems
+
+
+def report_check(name, problems):
+    print(f"{name}: " + (f"{GREEN}ok{END}" if not problems else f"{RED}problem{END}\n  - " + "\n  - ".join(problems)))
+    return bool(problems)
+
+
 def cmd_check_task(a, root):
     tasks = load_tasks(root)
     rc = 0
     for name in pick(tasks, a.tasks, "task"):
-        t, problems = tasks[name], []
-        ok, _, note = grade(t, "")
-        if ok:
-            problems.append("the starting code already passes the check, so this task would be free — "
-                            "make the check fail before the change")
-        sol = solution_patch(t)
-        if sol is None:
-            problems.append("no reference solution (add a solution/ folder or solution.diff) — needed to prove "
-                            "the task is solvable and for the $0 scripted runs")
-        else:
-            for i in range(a.repeat):
-                ok, _, note = grade(t, sol)
-                if not ok:
-                    problems.append(f"the reference solution fails the check (run {i + 1}/{a.repeat}: {note})")
-                    break
-        print(f"{name}: " + (f"{GREEN}ok{END}" if not problems else f"{RED}problem{END}\n  - " + "\n  - ".join(problems)))
-        rc |= bool(problems)
+        rc |= report_check(name, check_task(tasks[name], a.repeat))
     return rc
+
+
+def cmd_task(a, root):
+    if a.how == "from-pr":
+        d = author.from_pr(root, a.url, a.name, a.review, a.verify)
+    elif a.how == "from-commit":
+        d = author.from_commit(root, a.repo, a.sha, a.name, a.review, a.verify)
+    else:
+        d = author.new(root, a.name, a.prompt, a.verify, a.start)
+    print(f"created {d.relative_to(root) if d.is_relative_to(root) else d}; checking it ($0)")
+    return report_check(d.name, check_task(load_task(d)))
 
 
 def cmd_regrade(a, root):
@@ -266,11 +295,12 @@ def cmd_doctor(a, root):
             print(f"  {YELLOW}!{END} {p} exists: machine-wide policy applies to every trial")
     if a.quick:
         return 0
-    print("smoke ($0, scripted model, installed harnesses)")
+    print("smoke ($0, scripted model, every route of every installed harness, decoy instruction files planted)")
     with tempfile.TemporaryDirectory(prefix="hev-doctor-") as results:
         return cmd_run(argparse.Namespace(models="scripted", harnesses=a.harnesses, tasks=a.tasks or "00-smoke",
                                           trials=1, results=results, retry_errors=True, seed=0, budget=None,
-                                          yes=True, confirm_above=0, canary=None, fault=None, keep=False), root)
+                                          yes=True, confirm_above=0, canary=None, fault=None, keep=False,
+                                          route="all"), root)
 
 
 def main(argv=None):
@@ -290,6 +320,7 @@ def main(argv=None):
     r.add_argument("--seed", type=int, default=0)
     r.add_argument("--fault", help=argparse.SUPPRESS)
     r.add_argument("--canary", help=argparse.SUPPRESS)
+    r.add_argument("--route", help=argparse.SUPPRESS)      # force a protocol, or "all": test every declared route
     rep = sub.add_parser("report", help="compare harnesses per model from saved results")
     rep.add_argument("--md", action="store_true")
     rep.add_argument("--json", action="store_true")
@@ -305,6 +336,22 @@ def main(argv=None):
     c.add_argument("tasks", nargs="?")
     c.add_argument("--repeat", type=int, default=3)
     sub.add_parser("regrade", help="re-grade saved trials with the current verifiers ($0)")
+    tk = sub.add_parser("task", help="make a task from a GitHub PR, a local commit, or three questions")
+    how = tk.add_subparsers(dest="how", required=True)
+    pr = how.add_parser("from-pr", help="repo before the PR, PR diff as solution, its test files as hidden tests")
+    pr.add_argument("url", help="https://github.com/owner/repo/pull/123")
+    cm = how.add_parser("from-commit", help="the same from a local commit (the code is copied, nothing is uploaded)")
+    cm.add_argument("repo", help="path to a local git repo")
+    cm.add_argument("sha", help="the commit that solves the task")
+    for sp in (pr, cm):
+        sp.add_argument("--name", help="task folder name (default: from the repo and PR/commit)")
+        sp.add_argument("--review", action="store_true", help="make a code-review task of the change instead")
+        sp.add_argument("--verify", help="verify command (default: guessed from the repo, asked on a terminal)")
+    nw = how.add_parser("new", help="answer three questions, get a commented task folder")
+    nw.add_argument("name")
+    nw.add_argument("--prompt", help="what the agent should do")
+    nw.add_argument("--verify", help="shell command that exits 0 when the task is solved")
+    nw.add_argument("--start", help="folder with the starting files")
     for sp in (r, rep, d, sub.choices["regrade"]):
         sp.add_argument("--results", default=str(root / "results"), help=argparse.SUPPRESS)
     a = p.parse_args(argv)
@@ -315,7 +362,7 @@ def main(argv=None):
     signal.signal(signal.SIGTERM, on_term)
     try:
         return {"run": cmd_run, "report": cmd_report, "install": cmd_install, "doctor": cmd_doctor,
-                "check-task": cmd_check_task, "regrade": cmd_regrade}[a.cmd](a, root)
+                "check-task": cmd_check_task, "regrade": cmd_regrade, "task": cmd_task}[a.cmd](a, root)
     except ConfigError as e:
         print(f"{RED}config error{END}: {e}")
         return 2

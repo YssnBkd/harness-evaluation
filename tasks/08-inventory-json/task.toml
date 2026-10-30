@@ -1,0 +1,15 @@
+prompt = """
+Add two options to the `list` command of this inventory tool (`python3 -m inv list`):
+
+- `--format json` prints the items as a JSON array of objects with the keys "name", "qty" and "price" (qty and price
+  as numbers, not strings), in the same order as the text output. `--format text` is the default and its output
+  must not change.
+- `--below N` lists only the items whose qty is below N. It works with both formats.
+
+Document both options in the README. Keep the existing tests passing, add tests for the new options, then stop.
+"""
+tags = ["python", "feature"]
+
+[verify]
+cmd = "python3 -m unittest test_inv test_hidden_inv"
+hidden = "hidden"

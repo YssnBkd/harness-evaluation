@@ -1,0 +1,22 @@
+name = "Antigravity CLI"
+version = "1.4.10"
+notes = "Closed source, Linux x64 build only. Telemetry is tied to the Google account, not this machine. Gemini-native: other providers go through LiteLLM's generateContent translation."
+# The official installer always fetches the latest build; this pins one, verified against the sha512 from its manifest.
+install = """
+curl -fsSL -o {prefix}/agy.tar.gz https://storage.googleapis.com/antigravity-public/antigravity-cli/1.4.10-5501573669978112/linux-x64/cli_linux_x64.tar.gz \
+  && echo "3a14c21697e86349ce8402e0b1889cbd1d3a5f4e2cb4dc43aae1c48c404240c2ccff9f775eec277e1f759234a33ec026645c63ed22ab6f6ebede561eda7c38b6  {prefix}/agy.tar.gz" | sha512sum -c - \
+  && tar -xzf {prefix}/agy.tar.gz -C {prefix} antigravity && mv {prefix}/antigravity {prefix}/agy && rm {prefix}/agy.tar.gz
+"""
+bin = "{prefix}/agy"
+version_cmd = "AGY_CLI_DISABLE_AUTO_UPDATE=true {bin} --version"
+cmd = ["{bin}", "-p", "{prompt}", "--output-format", "json", "--model", "{model}", "--dangerously-skip-permissions",
+       "--settings", '{"modelProvider":"gemini"}']
+
+[env]
+AGY_CLI_DISABLE_AUTO_UPDATE = "true"
+
+[route.gemini]
+env = { GOOGLE_GEMINI_BASE_URL = "{base_url}", GEMINI_API_KEY = "{key}" }
+
+[scripted]
+model = "gemini-4-argon"

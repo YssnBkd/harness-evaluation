@@ -101,14 +101,15 @@ class Harness:
     cleanup: list = field(default_factory=list)
     path_dirs: list = field(default_factory=list)
     scripted: dict = field(default_factory=dict)
-    login: dict = field(default_factory=dict)
 
     @property
     def prefix(self):
         return CACHE / f"{self.name}@{self.version}"
 
-    def route_for(self, model):
+    def route_for(self, model, force=None):
         """The protocol this harness should use for `model`: native if it can, else the first it declares."""
+        if force:
+            return force if force in self.routes else None
         if model.protocol in self.routes:
             return model.protocol
         return next(iter(self.routes), None)
@@ -118,7 +119,7 @@ def load_harness(path):
     path = Path(path)
     t, where = _load(path), str(path)
     _check(where, t, {"name", "version", "install", "bin", "version_cmd", "cmd", "stdin", "env", "files", "route",
-                      "artifacts", "cleanup", "path", "scripted", "login", "notes"},
+                      "artifacts", "cleanup", "path", "scripted", "notes"},
            ["name", "version", "install", "bin", "cmd", "route"])
     if not isinstance(t["cmd"], list) or not t["cmd"]:
         raise ConfigError(f"{where}: cmd: must be a non-empty list of strings")
@@ -128,12 +129,11 @@ def load_harness(path):
         if proto not in PROTOCOLS:
             raise ConfigError(f"{where}: route.{proto}: unknown protocol (known: {', '.join(PROTOCOLS)})")
         _check(f"{where}: route.{proto}", r, {"env", "files", "args"})
-    _check(f"{where}: scripted", t.get("scripted", {}), {"tool", "arg"})
-    _check(f"{where}: login", t.get("login", {}), {"provider", "pass_env", "usage"})
+    _check(f"{where}: scripted", t.get("scripted", {}), {"model"})
     return Harness(path.stem, path, t["name"], t["version"], t["install"], t["bin"],
                    t.get("version_cmd", "{bin} --version"), t["cmd"], t.get("stdin", "none"), t.get("env", {}),
                    t.get("files", {}), t["route"], t.get("artifacts", []), t.get("cleanup", []),
-                   t.get("path", []), t.get("scripted", {}), t.get("login", {}))
+                   t.get("path", []), t.get("scripted", {}))
 
 
 def load_harnesses(root):
@@ -192,8 +192,12 @@ _PH = re.compile(r"\{([a-z_]+(?:\.[a-z_]+)?)\}")
 
 
 def fill(value, vars, where="value"):
-    """Substitute {name} placeholders in strings, recursively through lists/tables. Unknown names are errors."""
+    """Substitute {name} placeholders in strings, recursively through lists/tables. Unknown names are errors.
+    A string that is exactly one numeric placeholder stays a number, so `context = "{model.context}"` writes 200000."""
     if isinstance(value, str):
+        whole = _PH.fullmatch(value)
+        if whole and isinstance(vars.get(whole.group(1)), (int, float)) and not isinstance(vars[whole.group(1)], bool):
+            return vars[whole.group(1)]
         def sub(m):
             if m.group(1) not in vars:
                 raise ConfigError(f"{where}: unknown placeholder {{{m.group(1)}}} (known: {', '.join(sorted(vars))})")

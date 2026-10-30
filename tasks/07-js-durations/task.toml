@@ -1,0 +1,16 @@
+prompt = """
+`duration.js` converts between duration strings and milliseconds, and it is buggy. Fix it so that:
+
+- `parseDuration(text)` reads parts with the units d, h, m, s and ms (e.g. "1h30m", "250ms", "2d 4h"). Parts may be
+  separated by spaces, numbers may have decimals ("1.5h"), and a leading "-" negates the whole duration. Anything
+  else (an empty string, an unknown unit, stray text) throws an Error.
+- `formatDuration(ms)` writes whole units from largest to smallest, skipping zero parts ("1h30m", "1s500ms"), gives
+  "0s" for zero and a leading "-" for negative values, so that parseDuration(formatDuration(x)) === x for integers.
+
+Keep both exports. If you write tests, run them with `node --test`, then stop.
+"""
+tags = ["javascript", "bugfix"]
+
+[verify]
+cmd = "node --test duration.hidden.test.js"
+hidden = "hidden"

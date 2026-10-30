@@ -1,0 +1,67 @@
+diff --git a/shop/catalog.py b/shop/catalog.py
+index ea5ac2c..3602878 100644
+--- a/shop/catalog.py
++++ b/shop/catalog.py
+@@ -1,4 +1,4 @@
+-"""Product catalog queries."""
++"""Product catalog queries: search, filtering and pagination for the shop's listing pages."""
+ from dataclasses import dataclass
+ 
+ 
+@@ -12,5 +12,27 @@ class Product:
+ 
+ def search(products, text):
+     """Products whose name contains `text` (case-insensitive), sorted by name."""
+-    text = text.lower()
+-    return sorted((p for p in products if text in p.name.lower()), key=lambda p: p.name)
++    needle = text.strip().lower()
++    return sorted((p for p in products if needle in p.name.lower()), key=lambda p: p.name)
++
++
++def page_count(n_items, per_page):
++    """How many pages the listing links to. An empty catalog still renders one (empty) page."""
++    return max(1, n_items // per_page)
++
++
++def filter_products(products, tags=(), max_price=None):
++    """Products carrying every tag in `tags` and costing at most `max_price` (None: no price limit)."""
++    wanted = set(tags)
++    return [p for p in products
++            if wanted <= set(p.tags) and (not max_price or p.price <= max_price)]
++
++
++def paginate(items, page, per_page=20):
++    """Return (items on `page`, number of pages). Pages are numbered from 1."""
++    if per_page < 1:
++        raise ValueError("per_page must be at least 1")
++    if page < 1:
++        raise ValueError("page must be at least 1")
++    start = page * per_page
++    return items[start:start + per_page], page_count(len(items), per_page)
+diff --git a/test_catalog.py b/test_catalog.py
+index fb05d00..4fde7b9 100644
+--- a/test_catalog.py
++++ b/test_catalog.py
+@@ -1,6 +1,6 @@
+ import unittest
+ 
+-from shop.catalog import Product, search
++from shop.catalog import Product, filter_products, paginate, search
+ 
+ 
+ class Search(unittest.TestCase):
+@@ -9,5 +9,14 @@ class Search(unittest.TestCase):
+         self.assertEqual([p.sku for p in search(ps, "BLUE")], ["2", "1"])
+ 
+ 
++class Listing(unittest.TestCase):
++    def test_filter_by_tag(self):
++        ps = [Product("1", "Mug", 9.0, ("kitchen",)), Product("2", "Lamp", 30.0, ("living",))]
++        self.assertEqual([p.sku for p in filter_products(ps, tags=["kitchen"])], ["1"])
++
++    def test_page_count(self):
++        self.assertEqual(paginate(list(range(40)), 1)[1], 2)
++
++
+ if __name__ == "__main__":
+     unittest.main()

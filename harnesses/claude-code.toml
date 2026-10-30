@@ -1,0 +1,25 @@
+name = "Claude Code"
+version = "2.1.314"
+install = "npm i --prefix {prefix} --no-fund --no-audit --save-exact @anthropic-ai/claude-code@{version}"
+bin = "{prefix}/node_modules/.bin/claude"
+cmd = ["{bin}", "-p", "{prompt}", "--model", "{model}", "--output-format", "json", "--dangerously-skip-permissions"]
+artifacts = [".claude/**"]
+
+[env]
+CLAUDE_CONFIG_DIR = "{home}/.claude"
+DISABLE_AUTOUPDATER = "1"
+DISABLE_TELEMETRY = "1"
+CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1"
+
+[files.".claude.json"]
+hasCompletedOnboarding = true
+
+# It loads CLAUDE.md from every parent folder. Nothing is above the repo, but never load memory from outside it.
+[files.".claude/settings.json"]
+claudeMdExcludes = ["!{workdir}/**"]
+
+[route.anthropic]
+env = { ANTHROPIC_BASE_URL = "{base_url}", ANTHROPIC_AUTH_TOKEN = "{key}" }
+
+[scripted]
+model = "claude-haiku-5-5"

@@ -1,0 +1,37 @@
+name = "opencode"
+version = "1.19.3"
+install = "npm i --prefix {prefix} --no-fund --no-audit --save-exact opencode-ai@{version}"
+bin = "{prefix}/node_modules/.bin/opencode"
+cmd = ["{bin}", "run", "-m", "hev/{model}", "--format", "json", "--auto", "{prompt}"]
+artifacts = [".opencode/**"]
+
+[env]
+OPENCODE_CONFIG = "{home}/.config/opencode/opencode.json"
+OPENCODE_PURE = "1"                     # no external plugins
+OPENCODE_DISABLE_CLAUDE_CODE = "1"      # don't read Claude Code's files
+OPENCODE_DISABLE_AUTOUPDATE = "1"
+OPENCODE_DISABLE_LSP_DOWNLOAD = "1"
+OPENCODE_DISABLE_MODELS_FETCH = "1"
+
+[files.".config/opencode/opencode.json"]
+"$schema" = "https://opencode.ai/config.json"
+autoupdate = false
+share = "disabled"
+snapshot = false
+permission = "allow"
+mcp = {}
+plugin = []
+lsp = false
+formatter = false
+enabled_providers = ["hev"]
+
+# Gemini models have no native route here: they take the first route below (LiteLLM translates).
+[route.openai.files.".config/opencode/opencode.json".provider.hev]
+npm = "@ai-sdk/openai-compatible"
+options = { baseURL = "{base_url}", apiKey = "{key}" }
+models = { "{model}" = { limit = { context = "{model.context}", output = "{model.max_output}" } } }
+
+[route.anthropic.files.".config/opencode/opencode.json".provider.hev]
+npm = "@ai-sdk/anthropic"
+options = { baseURL = "{base_url}/v1", apiKey = "{key}" }
+models = { "{model}" = { limit = { context = "{model.context}", output = "{model.max_output}" } } }

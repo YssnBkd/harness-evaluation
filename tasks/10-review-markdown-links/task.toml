@@ -1,0 +1,24 @@
+# Made by `hev task from-pr https://github.com/Python-Markdown/markdown/pull/1621` on 2026-10-30. Edit the prompt, check the verify command, then run ./hev check-task 10-review-markdown-links
+prompt = """
+Review the change in the last commit (HEAD~1..HEAD) for bugs. Do not modify the code.
+Write your findings to REVIEW.md, one per line, as `path:line: what is wrong`, using line numbers of the files as they
+are now. Report only real problems, most important first.
+"""
+tags = ["review", "from-pr"]
+notes = "https://github.com/Python-Markdown/markdown/pull/1621 (BSD-3-Clause)"
+
+[repo]
+git = "https://github.com/Python-Markdown/markdown.git"
+rev = "7be0cff7318f9e0abf8a9481a4238a86e626530a"
+patch = "change.diff"
+# setup = "..."   # optional: install dependencies (runs before the agent, with network)
+
+[verify]
+cmd = "review"
+
+# Three reviewers flagged it: the test asserts on wall-clock time, so it fails on slow machines (it failed on
+# PyPy in the PR's CI). The other two comments (an API-compatibility question, a changelog heading) are judgment calls.
+[[expect]]
+file = "tests/test_syntax/inline/test_links.py"
+lines = [447, 454]
+any = ["time", "flaky", "flake", "slow", "elapsed", "monotonic", "machine", "wall", "benchmark", "nondetermin", "non-determin"]

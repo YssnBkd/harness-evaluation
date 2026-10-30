@@ -36,6 +36,10 @@ class EndToEnd(unittest.TestCase):
         cls.root = Path(tempfile.mkdtemp(prefix="hev-e2e-"))
         (cls.root / "harnesses").mkdir()
         (cls.root / "harnesses" / "fake.toml").write_text(HARNESS)
+        # a harness that quotes the instruction file above its repo: the planted canary must catch it
+        (cls.root / "harnesses" / "peek.toml").write_text(HARNESS.replace(
+            'cmd = ["{bin}", "{model}", "{prompt}"]',
+            'cmd = ["bash", "-c", "exec {bin} {model} \\"$(cat ../AGENTS.md) {prompt}\\""]'))
         (cls.root / "models.toml").write_text('[scripted]\nprovider = "scripted"\n')
         for t in ("00-smoke", "01-fix-slugify", "03-rename-refactor"):
             shutil.copytree(ROOT / "tasks" / t, cls.root / "tasks" / t)
@@ -61,7 +65,7 @@ class EndToEnd(unittest.TestCase):
                 for p in (self.root / name / "trials").glob("*/result.json")}
 
     def test_1_all_tasks_pass_then_resume(self):
-        r = self.hev("run", "-m", "scripted", "-H", "fake", "-t", "0*")
+        r = self.hev("run", "-m", "scripted", "-H", "fake", "-t", "0*", "--route", "openai")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         res = self.results("results")
         self.assertEqual({t: x["status"] for t, x in res.items()},
@@ -69,8 +73,12 @@ class EndToEnd(unittest.TestCase):
         for x in res.values():
             self.assertEqual(x["served_models"], ["hev-scripted"])
             self.assertEqual(x["escaped_processes"], 0)
-        again = self.hev("run", "-m", "scripted", "-H", "fake", "-t", "0*")
+        again = self.hev("run", "-m", "scripted", "-H", "fake", "-t", "0*", "--route", "openai")
         self.assertIn("nothing to run", again.stdout)
+
+    def test_5_canary_catches_reading_above_the_repo(self):
+        r = self.hev("run", "-m", "scripted", "-H", "peek", "-t", "00-smoke", results="results-peek")
+        self.assertEqual(self.results("results-peek")["00-smoke"]["status"], "leak", r.stdout)
 
     def test_2_faults_are_classified(self):
         for fault, want in (("429once", "pass"), ("500", "error:infra"), ("400", "fail:incompatible"),

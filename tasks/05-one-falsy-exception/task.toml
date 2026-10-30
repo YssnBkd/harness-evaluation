@@ -1,0 +1,22 @@
+# Made by `hev task from-pr https://github.com/more-itertools/more-itertools/pull/1279` on 2026-10-30. Edit the prompt, check the verify command, then run ./hev check-task 05-one-falsy-exception
+prompt = """
+one() and only() drop a falsy user-supplied exception
+
+`one(iterable, too_short=..., too_long=...)` and `only(iterable, default=None, too_long=...)` accept a custom
+exception to raise. If that exception instance evaluates as false (for example, an exception class that defines
+`__bool__` returning `False`), it is ignored and the default `ValueError` is raised instead. A custom exception must
+be raised whenever one is supplied, whatever its truth value.
+
+Fix it. Run any tests you write yourself, then stop.
+"""
+tags = ["from-pr"]
+notes = "https://github.com/more-itertools/more-itertools/pull/1279 (MIT)"
+
+[repo]
+git = "https://github.com/more-itertools/more-itertools.git"
+rev = "9ed3dbb0ae527230cd156d91d0af305478558fba"
+# setup = "..."   # optional: install dependencies (runs before the agent, with network)
+
+[verify]
+cmd = "python3 -m unittest tests/test_more.py"
+hidden = "hidden"           # copied in only for grading: the agent never sees these files

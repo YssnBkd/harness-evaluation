@@ -1,0 +1,33 @@
+# Made by `hev task from-pr https://github.com/more-itertools/more-itertools/pull/1305` on 2026-10-30. Edit the prompt, check the verify command, then run ./hev check-task 04-ichunked-bounds
+prompt = """
+ichunked(..., 0) raises islice's ValueError on a nonempty iterable
+
+`ichunked` is documented as being like `chunked`, but with lazy chunks. `chunked` treats `n=0` as "yield nothing".
+`ichunked` only does that when the source is already empty; with any remaining items it blows up:
+
+```python
+from more_itertools import chunked, ichunked
+
+rows = ["a", "b", "c"]
+print(list(chunked(rows, 0)))
+# []
+print([list(c) for c in ichunked(rows, 0)])
+# ValueError: Stop argument for islice() must be None or an integer: 0 <= x <= sys.maxsize.
+```
+
+Negative `n` has the same leak: `chunked` raises `ValueError: n must be at least 0`, while `ichunked` raises
+islice's "Indices for islice() must be None or an integer..." message.
+
+Fix it. Run any tests you write yourself, then stop.
+"""
+tags = ["from-pr"]
+notes = "https://github.com/more-itertools/more-itertools/pull/1305 (MIT)"
+
+[repo]
+git = "https://github.com/more-itertools/more-itertools.git"
+rev = "790bb0bb2c03e7a07282e5f16f4b1fde35b8fcf5"
+# setup = "..."   # optional: install dependencies (runs before the agent, with network)
+
+[verify]
+cmd = "python3 -m unittest tests/test_more.py"
+hidden = "hidden"           # copied in only for grading: the agent never sees these files

@@ -1,0 +1,31 @@
+prompt = """
+Review the change in the last commit (HEAD~1..HEAD) for bugs. Do not modify the code.
+Write your findings to REVIEW.md, one per line, as `path:line: what is wrong`, using line numbers of the files as they
+are now. Report only real problems, most important first.
+"""
+tags = ["python", "review"]
+
+[repo]
+path = "fixture"
+patch = "change.diff"
+
+[verify]
+cmd = "review"
+
+# pages are numbered from 1, so page 1 starts at index per_page: the first page of items is skipped (off-by-one; should be (page - 1) * per_page)
+[[expect]]
+file = "shop/catalog.py"
+lines = [37, 37]
+any = ["off-by-one", "off by one", "page - 1", "page-1", "1-based", "one-based", "first page", "skip", "0-based", "zero-based", "first 20", "first per_page"]
+
+# floor division drops the last partial page: 41 items at 20 per page gives 2 pages instead of 3 (needs ceiling division)
+[[expect]]
+file = "shop/catalog.py"
+lines = [21, 21]
+any = ["ceil", "partial", "last page", "floor", "round", "remainder", "truncat", "-(-", "divmod", "41", "21", "leftover", "trailing"]
+
+# max_price=0 is falsy and is treated as no limit, so a zero price cap returns every product (check `max_price is None`)
+[[expect]]
+file = "shop/catalog.py"
+lines = [28, 28]
+any = ["zero", "falsy", "is none", "is not none", "max_price=0", "max_price == 0", "max_price of 0", "0 is", "0.0", "free"]

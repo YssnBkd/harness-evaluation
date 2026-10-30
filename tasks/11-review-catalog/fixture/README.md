@@ -1,0 +1,1 @@
+# shop\n\nCatalog helpers for the shop's listing pages. Run the tests with `python3 -m unittest`.\n
