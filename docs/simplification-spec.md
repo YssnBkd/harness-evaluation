@@ -110,17 +110,19 @@ Stays: `TEST_FILE`, `REVIEW_PROMPT`, `CLOSES`, `guess_verify`, `write_toml`, `bu
 
 ### Docs
 
-- `README.md` (121 → ≈ 40): one-sentence pitch; the two quickstart commands; the two paid-run commands; an example
+Real minimalism, not relocation: no new doc, and the three together go from 297 lines to at most about 180.
+
+- `README.md` (121 → ≤ 45): one-sentence pitch; the two quickstart commands; the two paid-run commands; an example
   of `hev report` output rendered by `report.render` on illustrative rows and labelled as an example (no results
   are published yet); three bullets on the guarantees (same model behind every harness; nothing of yours is read or
-  changed, keys never reach a harness; the report says when it can't tell); links to `docs/reference.md`,
-  `TASKS.md`, the harness TOMLs and `./hev --help`; license.
-- `docs/reference.md` (new, ≈ 60): what a run does, the status table, the harness table, adding a model or a
-  harness, spending, what is not built yet. This is the README's current detail, tightened.
-- `TASKS.md` (106 → ≈ 75): the same one example per kind, with less prose around each; the loader rules that the
+  changed, keys never reach a harness; the report says when it can't tell); a line each on what the statuses mean
+  and on adding a model or a harness; links to `TASKS.md`, the harness TOMLs and `./hev --help`; license. The
+  harness table, the commands table, the spending section and the status section are cut: `./hev --help`,
+  `harnesses/*.toml` and `models.toml` say it.
+- `TASKS.md` (106 → ≤ 70): the same one example per kind, with less prose around each; the loader rules that the
   error messages already state are dropped.
-- `CLAUDE.md` (70 → ≈ 55): names the new functions, drops what the code now says, keeps the commands, the
-  isolation rules and the config rule, points at `docs/reference.md`.
+- `CLAUDE.md` (70 → ≤ 55): names the new functions, drops what the code now says, keeps the commands, the
+  isolation rules and the config rule.
 
 ## Line budget
 
@@ -137,9 +139,9 @@ Stays: `TEST_FILE`, `REVIEW_PROMPT`, `CLOSES`, `guess_verify`, `write_toml`, `bu
 | `hev` | 11 | 11 |
 | **Python total** | **1,722** | **≤ 1,591** |
 | `README.md` | 121 | 45 |
-| `TASKS.md` | 106 | 80 |
-| `CLAUDE.md` | 70 | 60 |
-| `docs/reference.md` | – | 65 |
+| `TASKS.md` | 106 | 70 |
+| `CLAUDE.md` | 70 | 55 |
+| **Docs total** | **297** | **≤ 180** |
 
 The brief's "about 1,500" would need cuts in the hooks and the report, which this spec keeps whole on purpose.
 
@@ -170,11 +172,11 @@ the orchestrator after review.
 | Step | Files | Who | Why |
 |---|---|---|---|
 | 0 | `docs/simplification-spec.md`, baseline | orchestrator | done |
-| A1 | `evals/trial.py`, `tests/test_units.py` | fork of this session (Fable 5.1, high) | the subtlest piece: the kill sequence, env allowlist and result dict must survive a split; a fork already holds the whole repo and this spec, so nothing is lost in a handoff |
-| A2 | `evals/cli.py` | fork of this session (Fable 5.1, high) | same reasons; `run_key` and every message must stay |
+| A1 | `evals/trial.py`, `tests/test_units.py` | fresh agent, Opus, high | the subtlest piece: the kill sequence, env allowlist and result dict must survive a split; a written brief with the invariants, not a fork, keeps the cost down |
+| A2 | `evals/cli.py` | fresh agent, Opus, high | same reasons; `run_key` and every message must stay |
 | A3 | `evals/config.py`, `evals/gateway.py`, `evals/author.py` | fresh agent, Opus, medium | mechanical and well specified; the unit tests pin the error messages and `from_commit` |
 | merge | – | orchestrator | review each diff, merge, run V1–V6, commit one step at a time |
-| B1 | `README.md`, `docs/reference.md` | orchestrator (Fable 5.1) | voice matters and the full picture is here |
+| B1 | `README.md` | orchestrator (Fable 5.1) | voice matters and the full picture is here |
 | B2 | `TASKS.md`, `CLAUDE.md` | fresh agent, Sonnet, medium | a sync against the final code and `--help` |
 | C | review of `git diff main..simplify` | fresh agent, Opus, high | fresh eyes: gets the diff and the invariants, not the orchestrator's conclusions |
 | end | spec "Outcome", V1–V6 | orchestrator | |
