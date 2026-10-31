@@ -80,7 +80,9 @@ def solution_patch(task):
         return None
     with tempfile.TemporaryDirectory() as d:
         base = materialize(task, d)
-        shutil.copytree(task.dir / "solution", d, dirs_exist_ok=True)
+        # copy2 would keep solution/'s old mtimes: an overwritten file of the same size can then look unchanged
+        # to git's stat cache and drop out of the patch. Plain copy gives every file a fresh mtime.
+        shutil.copytree(task.dir / "solution", d, dirs_exist_ok=True, copy_function=shutil.copy)
         return diff_against(d, base)
 
 
